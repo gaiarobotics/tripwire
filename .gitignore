@@ -1,0 +1,5 @@
+/dist/
+/tripwire
+/tripwired
+*.deb
+*.rpm
