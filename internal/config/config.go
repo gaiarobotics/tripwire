@@ -3,6 +3,8 @@ package config
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -72,7 +74,23 @@ type AllowRule struct {
 	LoginUID *int   `yaml:"loginuid"`
 	Unit     string `yaml:"unit"`     // systemd unit substring
 	Ancestor string `yaml:"ancestor"` // exe of any ancestor
-	Comment  string `yaml:"comment"`
+	// CapEff is a hex capability mask (as printed in /proc/<pid>/status). The
+	// rule matches only if the reader holds every capability in the mask.
+	CapEff  string `yaml:"cap_eff"`
+	Comment string `yaml:"comment"`
+}
+
+// CapEffMask parses the rule's capability mask. An empty mask means "no
+// capability requirement" and reports ok=false.
+func (r AllowRule) CapEffMask() (mask uint64, ok bool, err error) {
+	if strings.TrimSpace(r.CapEff) == "" {
+		return 0, false, nil
+	}
+	v, err := strconv.ParseUint(strings.TrimPrefix(strings.TrimSpace(r.CapEff), "0x"), 16, 64)
+	if err != nil {
+		return 0, false, fmt.Errorf("allow rule cap_eff %q is not a hex capability mask: %w", r.CapEff, err)
+	}
+	return v, true, nil
 }
 
 var validActions = map[string]bool{"alert": true, "kill": true, "poweroff": true}
@@ -133,6 +151,11 @@ func (c *Config) Validate() error {
 	}
 	if c.Profile != "workstation" && c.Profile != "server" {
 		return fmt.Errorf("unknown profile %q (valid: workstation, server)", c.Profile)
+	}
+	for i, r := range c.Allow {
+		if _, _, err := r.CapEffMask(); err != nil {
+			return fmt.Errorf("allow[%d]: %w", i, err)
+		}
 	}
 	return nil
 }

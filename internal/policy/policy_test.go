@@ -98,6 +98,46 @@ func TestAnyRuleMayMatch(t *testing.T) {
 	}
 }
 
+// A capability mask lets an operator allowlist "the backup agent, which runs
+// with CAP_DAC_READ_SEARCH" without pinning an exe path an attacker can occupy.
+func TestCapEffMaskMustBeFullyHeld(t *testing.T) {
+	const capDACReadSearch = 1 << 2
+	const capSysAdmin = 1 << 21
+	rs := Compile([]config.AllowRule{{Exe: "/usr/bin/backup", CapEff: "0000000000200004"}})
+
+	holdsBoth := attrib.Identity{Exe: "/usr/bin/backup", CapEff: capDACReadSearch | capSysAdmin}
+	if v := rs.Evaluate(holdsBoth); v != Benign {
+		t.Fatalf("verdict = %v, want Benign when every masked capability is held", v)
+	}
+	holdsOne := attrib.Identity{Exe: "/usr/bin/backup", CapEff: capDACReadSearch}
+	if v := rs.Evaluate(holdsOne); v != Hostile {
+		t.Fatalf("verdict = %v, want Hostile when only part of the mask is held", v)
+	}
+	holdsNone := attrib.Identity{Exe: "/usr/bin/backup"}
+	if v := rs.Evaluate(holdsNone); v != Hostile {
+		t.Fatalf("verdict = %v, want Hostile with no capabilities", v)
+	}
+}
+
+// A cap_eff-only rule is a real rule, not an empty one.
+func TestCapEffAloneIsASufficientRule(t *testing.T) {
+	rs := Compile([]config.AllowRule{{CapEff: "0x4"}})
+	if v := rs.Evaluate(attrib.Identity{CapEff: 0x4}); v != Benign {
+		t.Fatalf("verdict = %v, want Benign", v)
+	}
+	if v := rs.Evaluate(attrib.Identity{CapEff: 0x8}); v != Hostile {
+		t.Fatalf("verdict = %v, want Hostile", v)
+	}
+}
+
+// An unparseable mask must never degrade into "matches anything".
+func TestUnparseableCapEffRuleIsDropped(t *testing.T) {
+	rs := Compile([]config.AllowRule{{Exe: "/usr/bin/backup", CapEff: "not-hex"}})
+	if v := rs.Evaluate(attrib.Identity{Exe: "/usr/bin/backup", CapEff: 0xffff}); v != Hostile {
+		t.Fatalf("verdict = %v, want Hostile — a broken rule must not allowlist", v)
+	}
+}
+
 func TestVerdictString(t *testing.T) {
 	if Benign.String() != "benign" || Hostile.String() != "hostile" {
 		t.Fatalf("verdict strings = %q/%q", Benign, Hostile)

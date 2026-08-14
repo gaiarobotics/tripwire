@@ -40,10 +40,13 @@ sinks:
 #
 # Matching on exe alone is weak — an attacker can drop a binary at
 # /usr/bin/updatedb. Pair exe with loginuid wherever you can.
+#
+# Fields: exe, uid, loginuid, unit (cgroup substring), ancestor (exe or comm of
+# any ancestor), cap_eff (hex capability mask; the reader must hold every bit).
 allow:
   # - { exe: /usr/bin/updatedb, loginuid: 4294967295, comment: "mlocate indexer, system context" }
   # - { exe: /usr/bin/aide, unit: aide.service, comment: "file integrity baseline" }
   # - { exe: /usr/sbin/rkhunter, comment: "rootkit scanner" }
-  # - { ancestor: backupd, comment: "site backup agent" }
+  # - { ancestor: backupd, cap_eff: "0000000000000004", comment: "backup agent with CAP_DAC_READ_SEARCH" }
 
 state_dir: /var/lib/tripwire

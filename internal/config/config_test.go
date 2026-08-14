@@ -68,3 +68,27 @@ func TestArmedFalseWhenAlertOnly(t *testing.T) {
 		t.Fatal("kill is destructive")
 	}
 }
+
+func TestValidateRejectsBadCapEffMask(t *testing.T) {
+	_, err := Parse([]byte("allow:\n  - {exe: /usr/bin/aide, cap_eff: zzz}"))
+	if err == nil || !strings.Contains(err.Error(), "cap_eff") {
+		t.Fatalf("err = %v, want a cap_eff parse error", err)
+	}
+}
+
+func TestCapEffMaskAcceptsBareAndPrefixedHex(t *testing.T) {
+	cfg, err := Parse([]byte("allow:\n  - {exe: /usr/bin/aide, cap_eff: \"0x200004\"}\n  - {exe: /usr/bin/dump, cap_eff: \"000001ffffffffff\"}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []uint64{0x200004, 0x1ffffffffff} {
+		got, ok, err := cfg.Allow[i].CapEffMask()
+		if err != nil || !ok || got != want {
+			t.Fatalf("allow[%d] mask = %#x (ok=%t, err=%v), want %#x", i, got, ok, err, want)
+		}
+	}
+	// No mask set means no capability requirement.
+	if _, ok, _ := (AllowRule{Exe: "/x"}).CapEffMask(); ok {
+		t.Fatal("an unset cap_eff must not impose a requirement")
+	}
+}
