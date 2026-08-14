@@ -13,6 +13,11 @@ import (
 // LoginUIDUnsetValue is the kernel sentinel for "no login uid" ((uid_t)-1).
 const LoginUIDUnsetValue = 4294967295
 
+// SessionIDUnsetValue is the same sentinel for the audit session id. Processes
+// with no login session — every system daemon — share it, so it must never be
+// treated as a session that can be matched or killed.
+const SessionIDUnsetValue = 4294967295
+
 // maxAncestorDepth bounds the parent walk so a malformed or cyclic /proc can
 // never spin the daemon while a reader is held.
 const maxAncestorDepth = 32
@@ -43,6 +48,13 @@ type Identity struct {
 // LoginUIDUnset reports whether auid is the unset sentinel. loginuid-scoped
 // actions must refuse when this is true.
 func (id Identity) LoginUIDUnset() bool { return id.LoginUID == LoginUIDUnsetValue }
+
+// SessionIDUnset reports whether the reader has no audit session. session-scoped
+// actions must refuse when this is true: the sentinel is shared by every daemon
+// on the box, so "kill the session" would mean "kill the system".
+func (id Identity) SessionIDUnset() bool {
+	return id.SessionID <= 0 || id.SessionID == SessionIDUnsetValue
+}
 
 // Snapshotter reads process identity from a (possibly fake) proc root.
 type Snapshotter struct {

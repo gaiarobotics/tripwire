@@ -119,8 +119,8 @@ func (k *Killer) resolve(scope string, id attrib.Identity, maxKill int) ([]int, 
 	case "tree":
 		set = k.descendantsLeafFirst(id.PID)
 	case "session":
-		if id.SessionID <= 0 {
-			return nil, fmt.Errorf("kill scope session refused: reader has no audit session id")
+		if id.SessionIDUnset() {
+			return nil, fmt.Errorf("kill scope session refused: reader has no audit session (would match system daemons)")
 		}
 		for pid := range allPIDs(k.Tree, id) {
 			if k.Tree.Session(pid) == id.SessionID {

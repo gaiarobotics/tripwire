@@ -114,6 +114,26 @@ func TestResolveLoginUIDScopeFollowsSudoHops(t *testing.T) {
 	}
 }
 
+// The audit session id has the same unset sentinel as auid, and every system
+// daemon shares it — "kill the session" must not become "kill the system".
+func TestSessionScopeRefusesOnUnsetSession(t *testing.T) {
+	pt := procTable{procs: map[int]fakeProc{
+		5: {ppid: 1, sessionid: attrib.SessionIDUnsetValue, loginuid: 1000, starttime: 1},
+		6: {ppid: 1, sessionid: attrib.SessionIDUnsetValue, loginuid: 0, starttime: 2},
+		7: {ppid: 1, sessionid: attrib.SessionIDUnsetValue, loginuid: 0, starttime: 3},
+	}}
+	k := &Killer{Tree: pt}
+	id := attrib.Identity{PID: 5, SessionID: attrib.SessionIDUnsetValue, LoginUID: 1000, StartTime: 1}
+	if _, err := k.resolve("session", id, 50); err == nil {
+		t.Fatal("session scope must refuse when the audit session is unset")
+	}
+	// Zero is the other way a session can be missing.
+	id.SessionID = 0
+	if _, err := k.resolve("session", id, 50); err == nil {
+		t.Fatal("session scope must refuse a zero session id")
+	}
+}
+
 func TestLoginUIDScopeRefusesOnUnset(t *testing.T) {
 	pt := procTable{procs: map[int]fakeProc{5: {ppid: 1, loginuid: attrib.LoginUIDUnsetValue, starttime: 1}}}
 	id := attrib.Identity{PID: 5, LoginUID: attrib.LoginUIDUnsetValue}
