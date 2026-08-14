@@ -33,6 +33,7 @@ type Incident struct {
 	SessionID    int       `json:"session_id"`
 	Cgroup       string    `json:"cgroup"`
 	Ancestors    []string  `json:"ancestors"`
+	Planned      []string  `json:"planned_actions"` // the configured ladder, including what has not run yet
 	ActionsTaken []string  `json:"actions_taken"`
 	Killed       []Killed  `json:"killed,omitempty"`
 	AuditNote    string    `json:"audit_note,omitempty"`
