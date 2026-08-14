@@ -84,6 +84,52 @@ func TestReadRejectsCorruptRecord(t *testing.T) {
 	}
 }
 
+// Destructive actions stay off until an operator arms them deliberately, even
+// if the config lists poweroff.
+func TestArmDisarmRoundTrip(t *testing.T) {
+	st := &Store{Dir: t.TempDir()}
+	if st.IsArmed() {
+		t.Fatal("a fresh install must not be armed")
+	}
+	if err := st.Arm(time.Unix(1_700_000_000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if !st.IsArmed() {
+		t.Fatal("Arm must persist")
+	}
+	if err := st.Disarm(); err != nil {
+		t.Fatal(err)
+	}
+	if st.IsArmed() {
+		t.Fatal("Disarm must clear the marker")
+	}
+	if err := st.Disarm(); err != nil {
+		t.Fatalf("disarming twice must be a no-op: %v", err)
+	}
+}
+
+func TestTestResultRoundTrip(t *testing.T) {
+	st := &Store{Dir: t.TempDir()}
+	if _, err := st.LastTest(); err == nil {
+		t.Fatal("no test on record must be an error")
+	}
+	want := TestResult{
+		When:      time.Unix(1_700_000_000, 0).UTC(),
+		Delivered: true,
+		Sinks:     map[string]string{"ntfy": "confirmed", "email": "connection refused"},
+	}
+	if err := st.RecordTest(want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.LastTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Delivered || got.Sinks["ntfy"] != "confirmed" || !got.When.Equal(want.When) {
+		t.Fatalf("test result = %+v", got)
+	}
+}
+
 func TestDefaultDirIsUsedWhenUnset(t *testing.T) {
 	if got := (&Store{}).path(); got != "/var/lib/tripwire/tripped.json" {
 		t.Fatalf("default path = %q", got)

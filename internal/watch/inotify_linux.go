@@ -119,7 +119,9 @@ func NewInotify() (*Inotify, error) {
 }
 
 func (i *Inotify) Mark(path string) error {
-	wd, err := unix.InotifyAddWatch(i.in.fd, path, unix.IN_OPEN|unix.IN_ACCESS)
+	// IN_OPEN only: adding IN_ACCESS would report the same read twice, once for
+	// the open and once for the first read of its contents.
+	wd, err := unix.InotifyAddWatch(i.in.fd, path, unix.IN_OPEN)
 	if err != nil {
 		return fmt.Errorf("inotify_add_watch %s: %w", path, err)
 	}

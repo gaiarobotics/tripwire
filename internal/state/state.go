@@ -101,3 +101,65 @@ func (s *Store) Reset() error {
 	}
 	return err
 }
+
+// TestResult records the outcome of `tripwire test`. Arming destructive actions
+// requires one of these on file: nobody should point a poweroff at a host
+// without first proving the alert reaches them.
+type TestResult struct {
+	When      time.Time         `json:"when"`
+	Delivered bool              `json:"delivered"`
+	Sinks     map[string]string `json:"sinks"` // sink name -> "confirmed" or the error
+}
+
+func (s *Store) armPath() string  { return filepath.Join(s.dir(), "armed") }
+func (s *Store) testPath() string { return filepath.Join(s.dir(), "last-test.json") }
+
+// Arm records the operator's deliberate decision to enable destructive actions.
+// A destructive ladder in config.yaml is not enough on its own — the daemon
+// stays alert-only until this marker exists.
+func (s *Store) Arm(now time.Time) error {
+	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(s.armPath(), []byte(now.UTC().Format(time.RFC3339)+"\n"), 0o644)
+}
+
+// Disarm removes the marker, dropping the daemon back to alert-only.
+func (s *Store) Disarm() error {
+	err := os.Remove(s.armPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// IsArmed reports whether destructive actions have been explicitly enabled.
+func (s *Store) IsArmed() bool {
+	_, err := os.Stat(s.armPath())
+	return err == nil
+}
+
+// RecordTest saves the result of the most recent `tripwire test`.
+func (s *Store) RecordTest(r TestResult) error {
+	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.testPath(), b, 0o644)
+}
+
+// LastTest returns the most recent recorded test result.
+func (s *Store) LastTest() (TestResult, error) {
+	b, err := os.ReadFile(s.testPath())
+	if err != nil {
+		return TestResult{}, err
+	}
+	var r TestResult
+	if err := json.Unmarshal(b, &r); err != nil {
+		return TestResult{}, fmt.Errorf("parse %s: %w", s.testPath(), err)
+	}
+	return r, nil
+}
