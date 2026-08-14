@@ -46,6 +46,19 @@ type Sink interface {
 	Send(ctx context.Context, inc Incident) error
 }
 
+// LocalSink marks a sink that never leaves the machine — journald, notify-send.
+// Its confirmation is instant and therefore worthless as a gate: if a local
+// confirmation could satisfy the fan-out, the ladder would power the host off
+// before the notification that actually reaches a human had left the box.
+type LocalSink interface {
+	Local() bool
+}
+
+func isLocal(s Sink) bool {
+	l, ok := s.(LocalSink)
+	return ok && l.Local()
+}
+
 // ErrPending marks a sink that had not finished when the fan-out returned. Its
 // delivery may still succeed in the background — but it did not confirm in time
 // to gate a destructive action.
@@ -54,6 +67,7 @@ var ErrPending = errors.New("delivery still in flight when the fan-out returned"
 // Result reports the fan-out outcome.
 type Result struct {
 	Delivered     bool             // true if >=1 sink confirmed
+	OffHost       bool             // true if >=1 non-local sink confirmed
 	Confirmations map[string]error // per-sink error (nil == confirmed)
 }
 
@@ -73,11 +87,15 @@ func (r Result) Summary() string {
 	return fmt.Sprint(parts)
 }
 
-// FanOut sends to all sinks concurrently and returns as soon as one confirms
-// delivery or the timeout elapses — whichever comes first. Sinks that have not
-// settled by then are recorded as ErrPending and keep trying in the background
-// until the timeout; returning early matters because the ladder holds the
-// reader (and may power the host off) while this call is outstanding.
+// FanOut sends to all sinks concurrently and returns as soon as an off-host sink
+// confirms delivery, every sink has settled, or the timeout elapses — whichever
+// comes first. Sinks still in flight are recorded as ErrPending and keep trying
+// in the background.
+//
+// Returning early matters because the ladder holds the reader (and may power the
+// host off) while this call is outstanding — but only an off-host confirmation
+// may cut it short, since journald confirming instantly says nothing about
+// whether a human was reached.
 func FanOut(parent context.Context, sinks []Sink, inc Incident, timeout time.Duration) Result {
 	res := Result{Confirmations: make(map[string]error, len(sinks))}
 	if len(sinks) == 0 {
@@ -87,8 +105,9 @@ func FanOut(parent context.Context, sinks []Sink, inc Incident, timeout time.Dur
 	ctx, cancel := context.WithTimeout(parent, timeout)
 
 	type outcome struct {
-		name string
-		err  error
+		name  string
+		local bool
+		err   error
 	}
 	ch := make(chan outcome, len(sinks))
 	var wg sync.WaitGroup
@@ -96,7 +115,7 @@ func FanOut(parent context.Context, sinks []Sink, inc Incident, timeout time.Dur
 		wg.Add(1)
 		go func(s Sink) {
 			defer wg.Done()
-			ch <- outcome{s.Name(), send(ctx, s, inc)}
+			ch <- outcome{s.Name(), isLocal(s), send(ctx, s, inc)}
 		}(s)
 	}
 	// Release the context once every sink has settled, so a fast confirmation
@@ -120,7 +139,10 @@ collect:
 			res.Confirmations[o.name] = o.err
 			if o.err == nil {
 				res.Delivered = true
-				break collect
+				if !o.local {
+					res.OffHost = true
+					break collect
+				}
 			}
 		case <-ctx.Done():
 			unsettled = fmt.Errorf("no confirmation within alert timeout: %w", ctx.Err())
@@ -136,6 +158,7 @@ collect:
 			res.Confirmations[o.name] = o.err
 			if o.err == nil {
 				res.Delivered = true
+				res.OffHost = res.OffHost || !o.local
 			}
 		default:
 			for name := range pending {

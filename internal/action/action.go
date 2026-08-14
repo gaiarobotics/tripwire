@@ -87,8 +87,12 @@ func (l *Ladder) Run(ctx context.Context, id attrib.Identity, inc alert.Incident
 			inc.Killed = res.Killed
 			res.AlertRes = alert.FanOut(ctx, l.Sinks, inc, l.AlertTimeout)
 			res.Ran = append(res.Ran, "alert")
-			if !res.AlertRes.Delivered {
+			switch {
+			case !res.AlertRes.Delivered:
 				log.Printf("tripwire: no sink confirmed delivery: %s", res.AlertRes.Summary())
+			case !res.AlertRes.OffHost:
+				log.Printf("tripwire: only local sinks confirmed; nothing left this host: %s",
+					res.AlertRes.Summary())
 			}
 		case "kill":
 			if l.Killer == nil {

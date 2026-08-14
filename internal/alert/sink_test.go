@@ -89,6 +89,67 @@ func (panicSink) Send(context.Context, Incident) error {
 	panic("sink exploded")
 }
 
+type localSink struct {
+	name string
+	took time.Duration
+}
+
+func (l localSink) Name() string { return l.name }
+func (l localSink) Local() bool  { return true }
+func (l localSink) Send(ctx context.Context, _ Incident) error {
+	select {
+	case <-time.After(l.took):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// journald confirms instantly and never leaves the box. If that were enough to
+// end the fan-out, the ladder would power the host off before the phone
+// notification was even sent.
+func TestLocalConfirmationDoesNotPreemptTheRemoteSink(t *testing.T) {
+	remote := fakeSink{name: "ntfy", took: 120 * time.Millisecond}
+	res := FanOut(context.Background(), []Sink{localSink{name: "journal"}, remote}, Incident{}, 5*time.Second)
+
+	if res.Confirmations["ntfy"] != nil {
+		t.Fatalf("the fan-out must wait for the off-host sink, got %v", res.Confirmations["ntfy"])
+	}
+	if !res.OffHost {
+		t.Fatal("OffHost must be set once a remote sink confirms")
+	}
+}
+
+// With only local sinks configured there is nothing to wait for, so the fan-out
+// must not burn the whole alert timeout before a poweroff.
+func TestLocalOnlyFanOutReturnsImmediately(t *testing.T) {
+	start := time.Now()
+	res := FanOut(context.Background(), []Sink{localSink{name: "journal"}}, Incident{}, 30*time.Second)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("local-only fan-out took %v; it should return as soon as it settles", elapsed)
+	}
+	if !res.Delivered {
+		t.Fatal("the journal write is still a delivery")
+	}
+	if res.OffHost {
+		t.Fatal("a local sink must never report an off-host delivery")
+	}
+}
+
+// A remote sink that fails leaves the operator with only the local record, and
+// the result must say so rather than claiming success.
+func TestOffHostIsFalseWhenOnlyLocalSucceeds(t *testing.T) {
+	res := FanOut(context.Background(),
+		[]Sink{localSink{name: "journal"}, fakeSink{name: "ntfy", err: errors.New("no route to host")}},
+		Incident{}, time.Second)
+	if !res.Delivered {
+		t.Fatal("the journal still delivered")
+	}
+	if res.OffHost {
+		t.Fatal("nothing reached another device")
+	}
+}
+
 func TestFanOutWithNoSinksIsNotDelivered(t *testing.T) {
 	res := FanOut(context.Background(), nil, Incident{}, time.Second)
 	if res.Delivered {

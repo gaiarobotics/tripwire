@@ -18,6 +18,10 @@ func NewJournalSink(notify bool) *JournalSink { return &JournalSink{notify: noti
 
 func (s *JournalSink) Name() string { return "journal" }
 
+// Local reports that this sink never leaves the machine, so its (instant)
+// confirmation must not shorten the fan-out that gates a poweroff.
+func (s *JournalSink) Local() bool { return true }
+
 func (s *JournalSink) Send(ctx context.Context, inc Incident) error {
 	log.Printf("TRIPWIRE incident host=%s bait=%s verdict=%s exe=%q cmdline=%q uid=%d auid=%d session=%d cgroup=%s actions=%v killed=%d fp=%s test=%t",
 		inc.Host, inc.BaitPath, inc.Verdict, inc.Exe, inc.Cmdline, inc.UID, inc.AUID,
