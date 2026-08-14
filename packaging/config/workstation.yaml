@@ -1,0 +1,28 @@
+profile: workstation
+
+# Installed ALERT-ONLY. See server.yaml for the arming procedure; it is the same
+# on a workstation. The only difference in this profile is that the journal sink
+# also raises a desktop notification via notify-send.
+actions: [alert]
+
+alert_timeout: 10s
+
+bait:
+  - /etc/claude-code/credentials.json
+  - /etc/anthropic/claude.credentials.json
+  - /etc/codex/auth.json
+  - /etc/openai/codex-auth.json
+
+kill:
+  scope: tree
+  max_kill: 50
+poweroff:
+  mode: graceful
+
+sinks:
+  # ntfy: { url: "https://ntfy.sh/your-topic", priority: urgent, tags: "rotating_light" }
+  journal: true
+
+allow: []
+
+state_dir: /var/lib/tripwire

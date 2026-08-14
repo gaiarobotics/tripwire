@@ -1,0 +1,31 @@
+[Unit]
+Description=Tripwire credential canary daemon
+Documentation=https://github.com/mbarnathan/tripwire
+After=network-online.target auditd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/tripwired
+# fanotify permission events need CAP_SYS_ADMIN; the ladder needs CAP_KILL and
+# CAP_SYS_BOOT. Nothing else.
+AmbientCapabilities=CAP_SYS_ADMIN CAP_KILL CAP_SYS_BOOT CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_KILL CAP_SYS_BOOT CAP_DAC_READ_SEARCH
+
+# Restart always: the daemon dying is itself an alertable condition, and while
+# it is down the kernel fails every pending hold open — access is never wedged.
+Restart=always
+RestartSec=2
+
+# Hardening that does not interfere with /proc, /etc, or /var/lib access.
+NoNewPrivileges=no
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

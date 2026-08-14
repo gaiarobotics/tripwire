@@ -1,0 +1,49 @@
+profile: server
+
+# Installed ALERT-ONLY. Arming destructive actions takes three deliberate steps:
+#   1. add kill and/or poweroff to the list below
+#   2. run `tripwire test` and confirm the alert actually reaches you
+#   3. run `tripwire arm`, then `systemctl restart tripwired`
+# The daemon runs alert-only until all three are done, and drops back to
+# alert-only after any trip until `tripwire reset`.
+actions: [alert]
+
+# hold: how long a hostile read is stalled inside open(), looking like slow I/O,
+# while the ladder runs. Derived when unset: 3s alert-only, 15s destructive.
+# Set `hold: 0s` to answer immediately.
+# hold: 15s
+
+alert_timeout: 10s
+
+bait:
+  - /etc/claude-code/credentials.json
+  - /etc/anthropic/claude.credentials.json
+  - /etc/codex/auth.json
+  - /etc/openai/codex-auth.json
+
+kill:
+  scope: tree # pid | tree | session | loginuid
+  max_kill: 50
+poweroff:
+  mode: graceful # graceful | hard (sync + SysRq)
+
+sinks:
+  # ntfy reaches a different device than the one about to power off — configure
+  # at least one off-host sink before arming anything destructive.
+  # ntfy:    { url: "https://ntfy.sh/your-topic", priority: urgent, tags: "rotating_light" }
+  # webhook: { url: "https://example.com/hook", headers: { Authorization: "Bearer ..." } }
+  # email:   { to: you@example.com, from: tripwire@localhost, smtp_addr: "" }
+  journal: true
+
+# Allowlist benign readers. Every field set in a rule must match (AND); any rule
+# matching makes the read benign. A rule with no fields matches nothing.
+#
+# Matching on exe alone is weak — an attacker can drop a binary at
+# /usr/bin/updatedb. Pair exe with loginuid wherever you can.
+allow:
+  # - { exe: /usr/bin/updatedb, loginuid: 4294967295, comment: "mlocate indexer, system context" }
+  # - { exe: /usr/bin/aide, unit: aide.service, comment: "file integrity baseline" }
+  # - { exe: /usr/sbin/rkhunter, comment: "rootkit scanner" }
+  # - { ancestor: backupd, comment: "site backup agent" }
+
+state_dir: /var/lib/tripwire
