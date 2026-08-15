@@ -11,10 +11,17 @@ if command -v systemctl >/dev/null 2>&1; then
     systemctl disable --now tripwired.service || true
 fi
 
-for f in /etc/claude-code/credentials.json /etc/anthropic/claude.credentials.json \
-         /etc/codex/auth.json /etc/openai/codex-auth.json; do
-    rm -f "$f" || true
-done
+# Remove the decoys the config actually names, skipping any file Tripwire did
+# not write. The binary is still installed at this point (prerm runs before the
+# files are removed); the hardcoded list below is the fallback if it is not.
+if [ -x /usr/bin/tripwire ]; then
+    /usr/bin/tripwire _remove-bait || true
+else
+    for f in /etc/claude-code/credentials.json /etc/anthropic/claude.credentials.json \
+             /etc/codex/auth.json /etc/openai/codex-auth.json; do
+        rm -f "$f" || true
+    done
+fi
 # Remove the decoy directories if they are now empty; leave them if the operator
 # put something else there.
 for d in /etc/claude-code /etc/anthropic /etc/codex /etc/openai; do

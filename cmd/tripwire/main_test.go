@@ -227,23 +227,119 @@ func TestVerifyReportsMissingDecoys(t *testing.T) {
 	}
 }
 
-func TestPlaceBaitWritesFingerprintAndDecoys(t *testing.T) {
-	// Redirect the decoy paths by writing them under a temp root: DefaultDecoys
-	// uses absolute /etc paths, so this test only covers the fingerprint file and
-	// the failure mode when /etc is not writable.
-	c, _, _ := newCLI(t, "actions: [alert]")
-	err := c.placeBait()
-	if os.Geteuid() == 0 {
-		if err != nil {
-			t.Fatalf("running as root, placeBait should succeed: %v", err)
+// Placement follows the config, so an operator who moves the decoys gets those
+// decoys created — not the shipped defaults.
+func TestPlaceBaitFollowsConfiguredPaths(t *testing.T) {
+	dir := t.TempDir()
+	custom := filepath.Join(dir, "srv", "secrets", "openai-key.json")
+	other := filepath.Join(dir, "srv", "secrets", "claude.json")
+	c, out, _ := newCLI(t, "bait:\n  - "+custom+"\n  - "+other)
+
+	if err := c.run([]string{"_place-bait"}); err != nil {
+		t.Fatalf("_place-bait: %v", err)
+	}
+	for _, p := range []string{custom, other} {
+		if err := bait.Verify(bait.Decoy{Path: p}); err != nil {
+			t.Fatalf("configured decoy %s was not created: %v", p, err)
 		}
-		return
 	}
+	// The shipped defaults must NOT have been touched.
+	if strings.Contains(out.String(), "/etc/codex/auth.json") {
+		t.Fatalf("placed a default path despite a custom config:\n%s", out.String())
+	}
+	// The schema follows the path name.
+	raw, _ := os.ReadFile(custom)
+	if !strings.Contains(string(raw), "OPENAI_API_KEY") {
+		t.Fatalf("an openai-named decoy should carry the Codex schema: %s", raw)
+	}
+	raw, _ = os.ReadFile(other)
+	if !strings.Contains(string(raw), "claudeAiOauth") {
+		t.Fatalf("a non-codex decoy should carry the Claude schema: %s", raw)
+	}
+	// The fingerprint file is written for the daemon to embed in incidents.
+	if _, err := os.Stat(c.fingerprintPath); err != nil {
+		t.Fatalf("fingerprint file: %v", err)
+	}
+}
+
+// The footgun this guards: config is root-owned and placement runs as root, so a
+// typo pointing at a real file must cost an error, not the file.
+func TestPlaceBaitRefusesToOverwriteARealFile(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "passwd")
+	const original = "root:x:0:0:root:/root:/bin/bash\n"
+	if err := os.WriteFile(real, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, _, _ := newCLI(t, "bait:\n  - "+real)
+
+	err := c.run([]string{"_place-bait"})
 	if err == nil {
-		t.Fatal("placeBait must fail for an unprivileged user rather than silently skipping")
+		t.Fatal("placing a decoy over a real file must fail")
 	}
-	if !strings.Contains(err.Error(), "place /etc/") {
-		t.Fatalf("err = %v, want it to name the path it could not write", err)
+	if !strings.Contains(err.Error(), "not written by Tripwire") {
+		t.Fatalf("err = %v", err)
+	}
+	if got, _ := os.ReadFile(real); string(got) != original {
+		t.Fatal("the real file was overwritten")
+	}
+}
+
+// An unreadable or missing config must not break the package scripts: fall back
+// to the shipped defaults rather than failing the install.
+func TestPlaceBaitFallsBackWhenConfigIsUnreadable(t *testing.T) {
+	c, out, _ := newCLI(t, "actions: [alert]")
+	c.configPath = filepath.Join(t.TempDir(), "does-not-exist.yaml")
+
+	err := c.run([]string{"_place-bait"})
+	if !strings.Contains(out.String(), "using default decoy paths") {
+		t.Fatalf("expected a fallback note:\n%s", out.String())
+	}
+	// As an unprivileged test it cannot write under /etc, which is itself proof
+	// it fell back to the default absolute paths.
+	if os.Geteuid() != 0 && err == nil {
+		t.Fatal("expected the unprivileged write to /etc to fail")
+	}
+}
+
+func TestRemoveBaitDeletesOnlyOurFiles(t *testing.T) {
+	dir := t.TempDir()
+	decoy := filepath.Join(dir, "auth.json")
+	foreign := filepath.Join(dir, "real-creds.json")
+	if err := bait.Place(bait.Decoy{Path: decoy, Kind: bait.KindCodex}, "tw-deadbeefdeadbeef", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(foreign, []byte(`{"api_key":"sk-live-real"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, out, _ := newCLI(t, "bait:\n  - "+decoy+"\n  - "+foreign)
+
+	if err := c.run([]string{"_remove-bait"}); err != nil {
+		t.Fatalf("_remove-bait: %v", err)
+	}
+	if _, err := os.Stat(decoy); !os.IsNotExist(err) {
+		t.Fatal("our decoy should have been removed")
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Fatal("a file Tripwire did not write must survive uninstall")
+	}
+	if !strings.Contains(out.String(), "skipped "+foreign) {
+		t.Fatalf("the skip should be reported:\n%s", out.String())
+	}
+}
+
+// Uninstalling twice, or with the decoys already gone, must not error.
+func TestRemoveBaitIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	decoy := filepath.Join(dir, "auth.json")
+	if err := bait.Place(bait.Decoy{Path: decoy, Kind: bait.KindCodex}, "tw-deadbeefdeadbeef", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c, _, _ := newCLI(t, "bait:\n  - "+decoy)
+	for i := 0; i < 2; i++ {
+		if err := c.run([]string{"_remove-bait"}); err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
 	}
 }
 

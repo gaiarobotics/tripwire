@@ -6,9 +6,12 @@ package bait
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -45,6 +48,68 @@ func DefaultDecoys() []Decoy {
 		{"/etc/codex/auth.json", KindCodex},
 		{"/etc/openai/codex-auth.json", KindCodex},
 	}
+}
+
+// KindFor guesses which credential schema a path should mimic. Operator-added
+// paths are not in DefaultDecoys, so fall back to naming: anything mentioning
+// codex or openai gets the Codex schema, everything else the Claude one.
+func KindFor(path string) Kind {
+	for _, d := range DefaultDecoys() {
+		if d.Path == path {
+			return d.Kind
+		}
+	}
+	lower := strings.ToLower(path)
+	if strings.Contains(lower, "codex") || strings.Contains(lower, "openai") {
+		return KindCodex
+	}
+	return KindClaude
+}
+
+// DecoysFor pairs configured paths with the schema each should mimic, so the
+// installer, the daemon's refresh loop, and the CLI all agree on what belongs at
+// a given path.
+func DecoysFor(paths []string) []Decoy {
+	out := make([]Decoy, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, Decoy{Path: p, Kind: KindFor(p)})
+	}
+	return out
+}
+
+// fingerprintPattern matches the per-install id embedded in every decoy token.
+// It is how we recognise a file as one of ours.
+var fingerprintPattern = regexp.MustCompile(`tw-[0-9a-f]{16}`)
+
+// IsOurs reports whether the path is absent (safe to create) or holds a file
+// Tripwire itself wrote. It is what stands between a mistyped bait path and
+// overwriting a real credential file as root.
+func IsOurs(path string) (bool, error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return fingerprintPattern.Match(raw), nil
+}
+
+// PlaceSafe writes a decoy, refusing to clobber any file Tripwire did not
+// create. Every path that comes from configuration goes through here; Place
+// itself stays a raw write for tests and for callers that have already checked.
+func PlaceSafe(d Decoy, fingerprint string, now time.Time) error {
+	if !filepath.IsAbs(d.Path) {
+		return fmt.Errorf("decoy path %q must be absolute", d.Path)
+	}
+	ours, err := IsOurs(d.Path)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", d.Path, err)
+	}
+	if !ours {
+		return fmt.Errorf("refusing to overwrite %s: it exists and was not written by Tripwire", d.Path)
+	}
+	return Place(d, fingerprint, now)
 }
 
 // Place writes a structurally-valid, non-functional credential file with the
@@ -120,7 +185,7 @@ func Verify(d Decoy) error {
 // this periodically so the tokens never look abandoned.
 func Refresh(decoys []Decoy, fingerprint string, now time.Time) error {
 	for _, d := range decoys {
-		if err := Place(d, fingerprint, now); err != nil {
+		if err := PlaceSafe(d, fingerprint, now); err != nil {
 			return err
 		}
 	}

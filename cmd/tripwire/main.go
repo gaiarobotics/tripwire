@@ -70,6 +70,8 @@ func (c *cli) run(args []string) error {
 		return c.reset()
 	case "_place-bait": // used by the package postinstall; not documented
 		return c.placeBait()
+	case "_remove-bait": // used by the package preremove; not documented
+		return c.removeBait()
 	case "-h", "--help", "help":
 		c.usage()
 		return nil
@@ -274,22 +276,58 @@ func (c *cli) reset() error {
 	return nil
 }
 
-// placeBait generates the decoys. It runs from the package postinstall rather
-// than shipping them as packaged files, so the decoys are owned by no package
-// and look exactly like hand-configured credentials.
+// placeBait generates the decoys listed in the config. It runs from the package
+// postinstall rather than shipping the files in the package, so they are owned
+// by no package and look exactly like hand-configured credentials.
+//
+// Placement follows `bait:` so the config is the single source of truth for
+// which decoys exist — but it never overwrites a file Tripwire did not write, so
+// a mistyped path costs an error rather than a real credential file.
 func (c *cli) placeBait() error {
 	fp := bait.Fingerprint()
 	if err := os.MkdirAll(dirOf(c.fingerprintPath), 0o755); err == nil {
 		_ = os.WriteFile(c.fingerprintPath, []byte(fp+"\n"), 0o644)
 	}
+
 	now := c.now()
-	for _, d := range bait.DefaultDecoys() {
-		if err := bait.Place(d, fp, now); err != nil {
+	for _, d := range bait.DecoysFor(c.configuredBait()) {
+		if err := bait.PlaceSafe(d, fp, now); err != nil {
 			return fmt.Errorf("place %s: %w", d.Path, err)
 		}
 		fmt.Fprintf(c.out, "placed %s\n", d.Path)
 	}
 	return nil
+}
+
+// removeBait deletes the configured decoys on uninstall, skipping anything
+// Tripwire did not write.
+func (c *cli) removeBait() error {
+	for _, p := range c.configuredBait() {
+		ours, err := bait.IsOurs(p)
+		if err != nil || !ours {
+			if err == nil {
+				fmt.Fprintf(c.out, "skipped %s: not written by Tripwire\n", p)
+			}
+			continue
+		}
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", p, err)
+		}
+		fmt.Fprintf(c.out, "removed %s\n", p)
+	}
+	return nil
+}
+
+// configuredBait returns the decoy paths from config, falling back to the
+// defaults when the config is missing or unreadable — which is the normal case
+// on a first install, and must never break the package scripts.
+func (c *cli) configuredBait() []string {
+	cfg, err := c.loadConfig()
+	if err != nil {
+		fmt.Fprintf(c.out, "note: using default decoy paths (%v)\n", err)
+		return bait.DefaultPaths()
+	}
+	return c.baitPaths(cfg)
 }
 
 func (c *cli) baitPaths(cfg *config.Config) []string {

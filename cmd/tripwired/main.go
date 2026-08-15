@@ -172,9 +172,9 @@ func refreshLoop(ctx context.Context, cfg *config.Config, m watch.Marker, finger
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			for _, d := range decoysFor(cfg.Bait) {
+			for _, d := range bait.DecoysFor(cfg.Bait) {
 				_ = m.Unmark(d.Path)
-				if err := bait.Place(d, fingerprint, time.Now()); err != nil {
+				if err := bait.PlaceSafe(d, fingerprint, time.Now()); err != nil {
 					log.Printf("tripwired: refresh %s: %v", d.Path, err)
 				}
 				if err := m.Mark(d.Path); err != nil {
@@ -183,27 +183,6 @@ func refreshLoop(ctx context.Context, cfg *config.Config, m watch.Marker, finger
 			}
 		}
 	}
-}
-
-// decoysFor pairs configured paths with the schema each should mimic, falling
-// back to the Claude schema for operator-added paths we do not recognise.
-func decoysFor(paths []string) []bait.Decoy {
-	known := map[string]bait.Kind{}
-	for _, d := range bait.DefaultDecoys() {
-		known[d.Path] = d.Kind
-	}
-	out := make([]bait.Decoy, 0, len(paths))
-	for _, p := range paths {
-		kind, ok := known[p]
-		if !ok {
-			kind = bait.KindClaude
-			if strings.Contains(p, "codex") || strings.Contains(p, "openai") {
-				kind = bait.KindCodex
-			}
-		}
-		out = append(out, bait.Decoy{Path: p, Kind: kind})
-	}
-	return out
 }
 
 func hasDestructive(actions []string) bool {

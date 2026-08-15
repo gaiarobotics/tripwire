@@ -164,7 +164,7 @@ hold: 15s                 # how long a hostile read is stalled in open().
                           # 0s answers immediately.
 alert_timeout: 10s        # how long the ladder waits for delivery confirmation
 
-bait:                     # the decoys to watch
+bait:                     # the decoys — created here, watched here, removed here
   - /etc/claude-code/credentials.json
   - /etc/anthropic/claude.credentials.json
   - /etc/codex/auth.json
@@ -296,6 +296,29 @@ a token that expired in 2023 announces itself as bait.
 
 Marks are per-inode, so the daemon also watches each parent directory and
 re-marks a decoy that is replaced underneath it.
+
+### Moving or adding decoys
+
+`bait:` in `config.yaml` is the single source of truth: the installer creates
+exactly those paths, the daemon watches and refreshes them, and uninstall removes
+them. To put decoys somewhere else, edit `bait:` and re-run:
+
+```sh
+sudo tripwire _place-bait      # creates any configured decoy that is missing
+sudo systemctl restart tripwired
+```
+
+The schema follows the filename — a path mentioning `codex` or `openai` gets the
+Codex shape, anything else the Claude one.
+
+**Tripwire never overwrites a file it did not write.** Placement checks each
+target for the `tw-` fingerprint first, so pointing `bait:` at a real file by
+mistake costs you an error message rather than the file. The same check governs
+uninstall: an unrecognized file at a configured path is left alone.
+
+Pick paths that are plausible for the host. The value of a decoy is that no
+legitimate process has any reason to open it, so somewhere your actual tooling
+never walks is worth more than somewhere realistic-but-busy.
 
 ## Building from source
 
