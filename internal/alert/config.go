@@ -19,6 +19,6 @@ func FromConfig(cfg *config.Config) []Sink {
 	if e := cfg.Sinks.Email; e != nil && e.To != "" {
 		sinks = append(sinks, NewEmailSink(e.To, e.From, e.SMTPAddr))
 	}
-	sinks = append(sinks, NewJournalSink(cfg.Profile == "workstation"))
+	sinks = append(sinks, NewJournalSink(cfg.DesktopNotify()))
 	return sinks
 }

@@ -46,7 +46,20 @@ type SinkConfig struct {
 	Webhook *WebhookConfig `yaml:"webhook"`
 	Ntfy    *NtfyConfig    `yaml:"ntfy"`
 	Email   *EmailConfig   `yaml:"email"`
-	Journal bool           `yaml:"journal"` // always effectively on; false disables notify-send only
+	// Journal controls the desktop notification only. The journald record itself
+	// is always written — it is the forensic trace that outlives a poweroff, so
+	// it is not configurable. nil means "not set", which enables the desktop
+	// notification on the workstation profile.
+	Journal *bool `yaml:"journal"`
+}
+
+// DesktopNotify reports whether the journal sink should also raise a desktop
+// notification: workstation profile, not explicitly switched off.
+func (c *Config) DesktopNotify() bool {
+	if c.Profile != "workstation" {
+		return false
+	}
+	return c.Sinks.Journal == nil || *c.Sinks.Journal
 }
 
 type WebhookConfig struct {

@@ -92,3 +92,30 @@ func TestCapEffMaskAcceptsBareAndPrefixedHex(t *testing.T) {
 		t.Fatal("an unset cap_eff must not impose a requirement")
 	}
 }
+
+// The journald record is never configurable — only the desktop notification is,
+// and only the workstation profile has a desktop to notify.
+func TestDesktopNotifyRules(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{"workstation default", "profile: workstation", true},
+		{"workstation opted out", "profile: workstation\nsinks: {journal: false}", false},
+		{"workstation explicit", "profile: workstation\nsinks: {journal: true}", true},
+		{"server default", "profile: server", false},
+		{"server cannot opt in", "profile: server\nsinks: {journal: true}", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Parse([]byte(tc.yaml))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.DesktopNotify(); got != tc.want {
+				t.Fatalf("DesktopNotify() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
