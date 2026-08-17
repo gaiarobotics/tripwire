@@ -377,4 +377,4 @@ run it on a throwaway VM before arming a host you care about.
 
 ## License
 
-MIT.
+MIT — see [LICENSE](LICENSE).

@@ -21,7 +21,9 @@
       "Bash(sh -n test/smoke/install_smoke.sh)",
       "Bash(timeout 20 docker ps)",
       "Bash(sg docker -c 'docker run --rm -v \"$PWD\":/src:ro -w /tmp debian:12 sh -c \" *)",
-      "Bash(sg docker *)"
+      "Bash(sg docker *)",
+      "Bash(git add *)",
+      "Bash(git commit -q -m 'docs: add MIT LICENSE *)"
     ]
   }
 }
