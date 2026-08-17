@@ -225,3 +225,46 @@ func TestIsOursRecognisesOurFilesOnly(t *testing.T) {
 		t.Fatal("an empty file is not recognisably ours; refuse rather than guess")
 	}
 }
+
+func TestKindByNameResolvesSelectors(t *testing.T) {
+	cases := []struct {
+		name, path string
+		want       Kind
+	}{
+		{"", "/etc/codex/auth.json", KindCodex},           // unset == auto
+		{"auto", "/etc/codex/auth.json", KindCodex},       // auto infers
+		{"auto", "/srv/anything.json", KindClaude},        // auto default
+		{"claude", "/etc/codex/auth.json", KindClaude},    // explicit beats name
+		{"codex", "/etc/anthropic/creds.json", KindCodex}, // explicit beats name
+		{"CODEX", "/srv/x.json", KindCodex},               // case-insensitive
+		{"  codex  ", "/srv/x.json", KindCodex},           // tolerant of spacing
+	}
+	for _, tc := range cases {
+		got, err := KindByName(tc.name, tc.path)
+		if err != nil {
+			t.Fatalf("KindByName(%q, %q): %v", tc.name, tc.path, err)
+		}
+		if got != tc.want {
+			t.Errorf("KindByName(%q, %q) = %v, want %v", tc.name, tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestKindByNameRejectsUnknownSelector(t *testing.T) {
+	if _, err := KindByName("gemini", "/srv/x.json"); err == nil {
+		t.Fatal("an unknown kind must be an error, not a silent default")
+	}
+}
+
+func TestValidKindName(t *testing.T) {
+	for _, ok := range []string{"", "auto", "claude", "codex", "CODEX"} {
+		if !ValidKindName(ok) {
+			t.Errorf("ValidKindName(%q) = false", ok)
+		}
+	}
+	for _, bad := range []string{"gemini", "openai", "kind"} {
+		if ValidKindName(bad) {
+			t.Errorf("ValidKindName(%q) = true", bad)
+		}
+	}
+}

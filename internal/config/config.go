@@ -3,11 +3,14 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/mbarnathan/tripwire/internal/bait"
 )
 
 // Config is the parsed /etc/tripwire/config.yaml.
@@ -27,10 +30,58 @@ type Config struct {
 	Kill     KillConfig     `yaml:"kill"`
 	Poweroff PoweroffConfig `yaml:"poweroff"`
 
-	Bait  []string    `yaml:"bait"` // absolute paths of decoy files
+	Bait  []BaitEntry `yaml:"bait"` // the decoy files: created, watched, and removed
 	Sinks SinkConfig  `yaml:"sinks"`
 	Allow []AllowRule `yaml:"allow"` // policy allowlist
 	State string      `yaml:"state_dir"`
+}
+
+// BaitEntry is one decoy. It accepts either form in YAML:
+//
+//	bait:
+//	  - /etc/codex/auth.json                              # kind: auto
+//	  - { path: /srv/app/creds.json, kind: codex }        # explicit schema
+//
+// The plain string is the common case and stays the documented default; the
+// mapping exists for paths whose name does not reveal which credential schema
+// they should mimic.
+type BaitEntry struct {
+	Path string `yaml:"path"`
+	Kind string `yaml:"kind"` // auto (default) | claude | codex
+}
+
+// UnmarshalYAML accepts a scalar path or a mapping, so a plain list of strings
+// keeps working exactly as before.
+func (b *BaitEntry) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		var path string
+		if err := node.Decode(&path); err != nil {
+			return err
+		}
+		b.Path, b.Kind = path, bait.KindNameAuto
+		return nil
+	}
+	// A named type breaks the recursion back into this method.
+	type entry BaitEntry
+	var e entry
+	if err := node.Decode(&e); err != nil {
+		return err
+	}
+	*b = BaitEntry(e)
+	if strings.TrimSpace(b.Kind) == "" {
+		b.Kind = bait.KindNameAuto
+	}
+	return nil
+}
+
+// MarshalYAML writes back the short form when the kind is left to inference, so
+// round-tripping a config does not turn a readable list into mappings.
+func (b BaitEntry) MarshalYAML() (any, error) {
+	if b.Kind == "" || strings.EqualFold(b.Kind, bait.KindNameAuto) {
+		return b.Path, nil
+	}
+	type entry BaitEntry
+	return entry(b), nil
 }
 
 type KillConfig struct {
@@ -144,6 +195,36 @@ func (c *Config) applyDefaults() {
 	if c.State == "" {
 		c.State = "/var/lib/tripwire"
 	}
+	if len(c.Bait) == 0 {
+		// One place decides what "no bait configured" means, so the installer,
+		// the daemon, and the CLI cannot disagree about it.
+		for _, d := range bait.DefaultDecoys() {
+			c.Bait = append(c.Bait, BaitEntry{Path: d.Path, Kind: bait.KindNameAuto})
+		}
+	}
+}
+
+// BaitPaths lists the decoy paths, for marking and watching.
+func (c *Config) BaitPaths() []string {
+	out := make([]string, 0, len(c.Bait))
+	for _, b := range c.Bait {
+		out = append(out, b.Path)
+	}
+	return out
+}
+
+// Decoys resolves each entry to the schema it should carry: an explicit kind
+// wins, "auto" (the default) infers from the filename.
+func (c *Config) Decoys() ([]bait.Decoy, error) {
+	out := make([]bait.Decoy, 0, len(c.Bait))
+	for _, b := range c.Bait {
+		kind, err := bait.KindByName(b.Kind, b.Path)
+		if err != nil {
+			return nil, fmt.Errorf("bait %s: %w", b.Path, err)
+		}
+		out = append(out, bait.Decoy{Path: b.Path, Kind: kind})
+	}
+	return out, nil
 }
 
 // Validate rejects nonsensical configs.
@@ -168,6 +249,17 @@ func (c *Config) Validate() error {
 	for i, r := range c.Allow {
 		if _, _, err := r.CapEffMask(); err != nil {
 			return fmt.Errorf("allow[%d]: %w", i, err)
+		}
+	}
+	for i, b := range c.Bait {
+		if strings.TrimSpace(b.Path) == "" {
+			return fmt.Errorf("bait[%d]: path is required", i)
+		}
+		if !filepath.IsAbs(b.Path) {
+			return fmt.Errorf("bait[%d]: path %q must be absolute", i, b.Path)
+		}
+		if !bait.ValidKindName(b.Kind) {
+			return fmt.Errorf("bait[%d] (%s): unknown kind %q (valid: %s)", i, b.Path, b.Kind, bait.KindNames())
 		}
 	}
 	return nil

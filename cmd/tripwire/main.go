@@ -290,7 +290,7 @@ func (c *cli) placeBait() error {
 	}
 
 	now := c.now()
-	for _, d := range bait.DecoysFor(c.configuredBait()) {
+	for _, d := range c.configuredDecoys() {
 		if err := bait.PlaceSafe(d, fp, now); err != nil {
 			return fmt.Errorf("place %s: %w", d.Path, err)
 		}
@@ -302,7 +302,8 @@ func (c *cli) placeBait() error {
 // removeBait deletes the configured decoys on uninstall, skipping anything
 // Tripwire did not write.
 func (c *cli) removeBait() error {
-	for _, p := range c.configuredBait() {
+	for _, d := range c.configuredDecoys() {
+		p := d.Path
 		ours, err := bait.IsOurs(p)
 		if err != nil || !ours {
 			if err == nil {
@@ -318,24 +319,24 @@ func (c *cli) removeBait() error {
 	return nil
 }
 
-// configuredBait returns the decoy paths from config, falling back to the
-// defaults when the config is missing or unreadable — which is the normal case
-// on a first install, and must never break the package scripts.
-func (c *cli) configuredBait() []string {
+// configuredDecoys returns the decoys from config — paths paired with the schema
+// each should carry — falling back to the shipped defaults when the config is
+// missing or unreadable. That fallback is the normal case on a first install and
+// must never break the package scripts.
+func (c *cli) configuredDecoys() []bait.Decoy {
 	cfg, err := c.loadConfig()
-	if err != nil {
-		fmt.Fprintf(c.out, "note: using default decoy paths (%v)\n", err)
-		return bait.DefaultPaths()
+	if err == nil {
+		decoys, derr := cfg.Decoys()
+		if derr == nil {
+			return decoys
+		}
+		err = derr
 	}
-	return c.baitPaths(cfg)
+	fmt.Fprintf(c.out, "note: using default decoy paths (%v)\n", err)
+	return bait.DefaultDecoys()
 }
 
-func (c *cli) baitPaths(cfg *config.Config) []string {
-	if len(cfg.Bait) > 0 {
-		return cfg.Bait
-	}
-	return bait.DefaultPaths()
-}
+func (c *cli) baitPaths(cfg *config.Config) []string { return cfg.BaitPaths() }
 
 func (c *cli) fingerprint() string {
 	if b, err := os.ReadFile(c.fingerprintPath); err == nil {

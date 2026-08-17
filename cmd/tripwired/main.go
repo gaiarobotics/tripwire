@@ -55,10 +55,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("tripwired: config: %v", err)
 	}
-	if len(cfg.Bait) == 0 {
-		cfg.Bait = bait.DefaultPaths()
-	}
-
 	st := &state.Store{Dir: cfg.State}
 	actions := daemon.EffectiveActions(cfg, st)
 
@@ -72,7 +68,7 @@ func main() {
 		actions = []string{"alert"}
 	}
 
-	marked := markAll(marker, cfg.Bait)
+	marked := markAll(marker, cfg.BaitPaths())
 	if marked == 0 {
 		log.Fatalf("tripwired: no decoys could be marked; refusing to run disarmed")
 	}
@@ -80,7 +76,7 @@ func main() {
 	// fanotify marks are per-inode, so watch the parent directories too and
 	// re-mark anything that gets replaced underneath us.
 	var replaced <-chan string
-	if dw, err := watch.NewDirWatcher(cfg.Bait); err != nil {
+	if dw, err := watch.NewDirWatcher(cfg.BaitPaths()); err != nil {
 		log.Printf("tripwired: parent-directory watch unavailable: %v (replaced decoys will not be re-marked)", err)
 	} else {
 		defer dw.Close()
@@ -165,6 +161,12 @@ func markAll(m watch.Marker, paths []string) int {
 // the daemon never opens a marked inode, because doing so would deadlock it
 // against its own permission event.
 func refreshLoop(ctx context.Context, cfg *config.Config, m watch.Marker, fingerprint string) {
+	decoys, err := cfg.Decoys()
+	if err != nil {
+		// Validation already rejected this at startup; belt and braces.
+		log.Printf("tripwired: refresh disabled: %v", err)
+		return
+	}
 	t := time.NewTicker(refreshInterval)
 	defer t.Stop()
 	for {
@@ -172,7 +174,7 @@ func refreshLoop(ctx context.Context, cfg *config.Config, m watch.Marker, finger
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			for _, d := range bait.DecoysFor(cfg.Bait) {
+			for _, d := range decoys {
 				_ = m.Unmark(d.Path)
 				if err := bait.PlaceSafe(d, fingerprint, time.Now()); err != nil {
 					log.Printf("tripwired: refresh %s: %v", d.Path, err)

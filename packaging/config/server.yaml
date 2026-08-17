@@ -15,6 +15,14 @@ actions: [alert]
 
 alert_timeout: 10s
 
+# The decoys: these paths are created on install, watched by the daemon,
+# refreshed periodically, and removed on uninstall. Tripwire never overwrites a
+# file it did not write, so a typo here costs an error, not the file.
+#
+# A bare path infers its credential schema from the name (codex/openai -> the
+# Codex shape, anything else -> the Claude shape). Where the name does not give
+# it away, say so explicitly:
+#   - { path: /srv/app/config/creds.json, kind: codex }   # auto | claude | codex
 bait:
   - /etc/claude-code/credentials.json
   - /etc/anthropic/claude.credentials.json

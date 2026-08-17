@@ -169,6 +169,8 @@ bait:                     # the decoys — created here, watched here, removed h
   - /etc/anthropic/claude.credentials.json
   - /etc/codex/auth.json
   - /etc/openai/codex-auth.json
+  # Long form, for paths whose name does not reveal the schema:
+  # - { path: /srv/app/config/creds.json, kind: codex }   # auto | claude | codex
 
 kill:
   scope: tree             # pid | tree | session | loginuid
@@ -308,8 +310,20 @@ sudo tripwire _place-bait      # creates any configured decoy that is missing
 sudo systemctl restart tripwired
 ```
 
-The schema follows the filename — a path mentioning `codex` or `openai` gets the
-Codex shape, anything else the Claude one.
+Each entry is either a bare path or a mapping:
+
+```yaml
+bait:
+  - /etc/codex/auth.json                                # kind: auto (the default)
+  - { path: /srv/app/config/creds.json, kind: codex }   # explicit schema
+  - { path: /srv/app/config/keys.json,  kind: claude }
+```
+
+A bare path — or `kind: auto` — infers the schema from the filename: anything
+mentioning `codex` or `openai` gets the Codex shape, everything else the Claude
+one. Name a `kind` when the path does not give it away, or when you want the
+inference overridden. Unknown kinds are rejected at startup rather than silently
+defaulted, and writing the config back out keeps bare paths bare.
 
 **Tripwire never overwrites a file it did not write.** Placement checks each
 target for the `tw-` fingerprint first, so pointing `bait:` at a real file by

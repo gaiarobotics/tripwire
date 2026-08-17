@@ -50,6 +50,44 @@ func DefaultDecoys() []Decoy {
 	}
 }
 
+// Schema names accepted in configuration. "auto" defers to KindFor, which reads
+// the filename — the default, and all most installs ever need.
+const (
+	KindNameAuto   = "auto"
+	KindNameClaude = "claude"
+	KindNameCodex  = "codex"
+)
+
+// ValidKindName reports whether name is a schema selector we understand. The
+// empty string means unset, which is treated as "auto".
+func ValidKindName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", KindNameAuto, KindNameClaude, KindNameCodex:
+		return true
+	}
+	return false
+}
+
+// KindNames lists the accepted selectors, for error messages.
+func KindNames() string {
+	return KindNameAuto + ", " + KindNameClaude + ", " + KindNameCodex
+}
+
+// KindByName resolves a configured schema selector for a path. An unset or
+// "auto" selector infers from the filename; anything else names a schema
+// explicitly and overrides inference.
+func KindByName(name, path string) (Kind, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", KindNameAuto:
+		return KindFor(path), nil
+	case KindNameClaude:
+		return KindClaude, nil
+	case KindNameCodex:
+		return KindCodex, nil
+	}
+	return 0, fmt.Errorf("unknown decoy kind %q (valid: %s)", name, KindNames())
+}
+
 // KindFor guesses which credential schema a path should mimic. Operator-added
 // paths are not in DefaultDecoys, so fall back to naming: anything mentioning
 // codex or openai gets the Codex schema, everything else the Claude one.
