@@ -143,6 +143,7 @@ Last test:   2026-08-14T01:13:42-04:00 (delivered=true)
 | `tripwire arm [--force]` | enables the configured destructive actions; `--force` skips the passing-test requirement |
 | `tripwire disarm` | back to alert-only |
 | `tripwire reset` | clears a tripped record so the host can be armed again |
+| `tripwire regenerate` | rewrites the decoys, re-running LLM generation where configured |
 
 `TRIPWIRE_CONFIG` and `TRIPWIRE_FINGERPRINT` override the CLI's default paths,
 and `tripwired -config <path>` does the same for the daemon — useful for trying a
@@ -170,7 +171,11 @@ bait:                     # the decoys — created here, watched here, removed h
   - /etc/codex/auth.json
   - /etc/openai/codex-auth.json
   # Long form, for paths whose name does not reveal the schema:
-  # - { path: /srv/app/config/creds.json, kind: codex }   # auto | claude | codex
+  # - { path: /srv/app/config/creds.json, kind: codex }   # auto | claude | codex | llm
+
+llm:                      # optional; only used by `kind: llm` entries. See below.
+  # provider: anthropic
+  # model: claude-opus-5
 
 kill:
   scope: tree             # pid | tree | session | loginuid
@@ -324,6 +329,70 @@ mentioning `codex` or `openai` gets the Codex shape, everything else the Claude
 one. Name a `kind` when the path does not give it away, or when you want the
 inference overridden. Unknown kinds are rejected at startup rather than silently
 defaulted, and writing the config back out keeps bare paths bare.
+
+### Generated decoys (`kind: llm`)
+
+The built-in templates are fixed shapes. `kind: llm` instead asks a language
+model to write the file, so a decoy can match whatever the host plausibly runs —
+a CI service account, an internal gateway's credential file, a vendor SDK's
+config — rather than one of two hardcoded schemas.
+
+It is off unless you ask for it. `auto` never selects it, and a `kind: llm` entry
+with no `llm:` section is a config error rather than a silent fallback.
+
+```yaml
+bait:
+  - { path: /srv/jenkins/.secrets/ai-gateway.json, kind: llm }
+
+llm:
+  provider: anthropic              # anthropic | openai-compatible
+  model: claude-opus-5
+  api_key_env: ANTHROPIC_API_KEY   # default per provider
+  guidance: "a Jenkins build host that calls an internal AI gateway"
+```
+
+```sh
+sudo ANTHROPIC_API_KEY=sk-ant-... tripwire regenerate
+```
+
+| Field | Meaning |
+|---|---|
+| `provider` | `anthropic` (Messages API) or `openai-compatible` (`/chat/completions` — OpenAI, vLLM, Ollama, LiteLLM, OpenRouter, most gateways) |
+| `model` | Model id, e.g. `claude-opus-5` or `gpt-4o` |
+| `api_key_env` | Env var holding the key. Defaults to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` |
+| `api_key_file` | File holding the key, whitespace trimmed |
+| `api_key` | Inline key — discouraged; `config.yaml` is 0644 on a normal install |
+| `base_url` | Self-hosted or proxied endpoint. A keyless local endpoint is allowed |
+| `timeout` | Per-request timeout, default 30s |
+| `max_tokens` | Default 8192 |
+| `effort` | Anthropic only, sent only when set — not every model accepts it |
+| `guidance` | One line about the host; the strongest lever on what the decoy looks like |
+
+**The daemon never calls an LLM.** Generation runs only in the CLI —
+`tripwire _place-bait` at install and `tripwire regenerate` on demand — so the
+root process holding `CAP_SYS_ADMIN` makes no outbound requests and never needs
+an API key. The consequence is that generated decoys are not refreshed on the
+daemon's 12-hour timer the way template decoys are. If you want them rewritten
+periodically, run `tripwire regenerate` from a systemd timer or cron with the key
+in that unit's environment.
+
+**Generation failures are never fatal.** A decoy that doesn't exist can't trip,
+so an unreachable provider, a refusal, a truncated response, non-JSON output, or
+output missing the install fingerprint all fall back to the template schema
+inferred from the path. `tripwire _place-bait` reports the fallback and keeps
+going — an install is never broken by an API outage — while `tripwire regenerate`
+treats it as an error, since you asked for generation explicitly.
+
+Every generated file is checked before it is written: it must be a non-empty JSON
+object, under 64 KB, and must embed the install fingerprint. That last check is
+the load-bearing one — a decoy token that can't be traced back to the host it
+leaked from isn't worth planting. The no-clobber rule applies here too.
+
+**What this does not do:** the model is asked for structurally plausible,
+non-functional values, but nothing can guarantee it never reproduces a
+credential-shaped string it saw in training. The fingerprint check means anything
+Tripwire writes is traceable to your host; treat generated decoys as bait to be
+reviewed once (`cat` one after generating), not as content you never look at.
 
 **Tripwire never overwrites a file it did not write.** Placement checks each
 target for the `tw-` fingerprint first, so pointing `bait:` at a real file by

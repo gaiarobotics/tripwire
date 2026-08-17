@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -387,4 +389,107 @@ func TestStoreFollowsConfiguredStateDir(t *testing.T) {
 		t.Fatalf("store dir = %q, want %q", c.store(cfg).Dir, stateDir)
 	}
 	var _ *config.Config = cfg
+}
+
+// The full generation path: config -> key resolution -> provider call ->
+// validation -> decoy on disk, driven through the CLI as an operator would.
+func TestRegenerateUsesTheConfiguredProvider(t *testing.T) {
+	var gotAuth, gotBody string
+	// Behave like the real thing: read the tracking string out of the prompt and
+	// embed it in the credential, which is exactly what the model is asked to do.
+	fpPattern := regexp.MustCompile(`tw-[0-9a-f]{16}`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody, gotAuth = string(b), r.Header.Get("x-api-key")
+		fp := fpPattern.FindString(gotBody)
+		fmt.Fprintf(w, `{"stop_reason":"end_turn","content":[{"type":"text","text":"{\"service_account\":\"jenkins-ci\",\"token\":\"sk-%s-9f\"}"}]}`, fp)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	decoy := filepath.Join(dir, "creds.json")
+	c, out, _ := newCLI(t, "bait:\n  - {path: "+decoy+", kind: llm}\n"+
+		"llm: {provider: anthropic, model: claude-opus-5, api_key_env: TRIPWIRE_TEST_KEY, base_url: \""+srv.URL+"\", guidance: a Jenkins build host}")
+	t.Setenv("TRIPWIRE_TEST_KEY", "sk-test-key")
+
+	if err := c.run([]string{"regenerate"}); err != nil {
+		t.Fatalf("regenerate: %v", err)
+	}
+	if gotAuth != "sk-test-key" {
+		t.Fatalf("the resolved key was not sent: %q", gotAuth)
+	}
+	if !strings.Contains(gotBody, "Jenkins build host") {
+		t.Fatalf("guidance did not reach the provider: %s", gotBody)
+	}
+
+	raw, err := os.ReadFile(decoy)
+	if err != nil {
+		t.Fatalf("decoy not written: %v", err)
+	}
+	if !strings.Contains(string(raw), "jenkins-ci") {
+		t.Fatalf("generated content not written: %s", raw)
+	}
+	if !strings.Contains(string(raw), c.fingerprint()) {
+		t.Fatalf("generated decoy must carry the install fingerprint: %s", raw)
+	}
+	if !strings.Contains(out.String(), "(generated)") {
+		t.Fatalf("output should report generation:\n%s", out.String())
+	}
+	if err := bait.Verify(bait.Decoy{Path: decoy}); err != nil {
+		t.Fatalf("generated decoy must be 0600: %v", err)
+	}
+}
+
+// An unreachable provider must not break `_place-bait` — the package postinstall
+// runs it, and an install with no decoys is an install with no tripwire.
+func TestPlaceBaitFallsBackWhenGenerationFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(503)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	decoy := filepath.Join(dir, "codex-auth.json")
+	c, out, _ := newCLI(t, "bait:\n  - {path: "+decoy+", kind: llm}\n"+
+		"llm: {provider: anthropic, model: claude-opus-5, api_key_env: TRIPWIRE_TEST_KEY, base_url: \""+srv.URL+"\"}")
+	t.Setenv("TRIPWIRE_TEST_KEY", "sk-test-key")
+
+	if err := c.run([]string{"_place-bait"}); err != nil {
+		t.Fatalf("_place-bait must not fail when the provider is down: %v", err)
+	}
+	raw, err := os.ReadFile(decoy)
+	if err != nil {
+		t.Fatalf("a template decoy must still exist: %v", err)
+	}
+	if !strings.Contains(string(raw), "OPENAI_API_KEY") {
+		t.Fatalf("expected the template schema: %s", raw)
+	}
+	if !strings.Contains(out.String(), "from template") {
+		t.Fatalf("the fallback should be reported:\n%s", out.String())
+	}
+
+	// The same failure is fatal for an explicit regenerate.
+	if err := c.run([]string{"regenerate"}); err == nil {
+		t.Fatal("regenerate must fail loudly when generation fails")
+	}
+}
+
+// Without an llm section nothing reaches a provider, even for a decoy whose
+// name mentions a model.
+func TestNoProviderCallWithoutLLMKind(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	decoy := filepath.Join(dir, "claude-llm-openai.json")
+	c, _, _ := newCLI(t, "bait:\n  - "+decoy+"\n"+
+		"llm: {provider: anthropic, model: claude-opus-5, api_key: k, base_url: \""+srv.URL+"\"}")
+
+	if err := c.run([]string{"regenerate"}); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("a template decoy must not trigger an API call")
+	}
 }

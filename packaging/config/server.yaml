@@ -43,6 +43,27 @@ sinks:
   # email:   { to: you@example.com, from: tripwire@localhost, smtp_addr: "" }
   journal: true
 
+# Optional: generate decoy contents with a language model instead of the
+# built-in templates, for decoys whose bait entry says `kind: llm`. Nothing
+# below is consulted unless some entry asks for it, and the daemon never uses
+# it — generation happens in `tripwire _place-bait` and `tripwire regenerate`,
+# so the root daemon makes no outbound calls and needs no API key.
+#
+# llm:
+#   provider: anthropic          # anthropic | openai-compatible
+#   model: claude-opus-5
+#   api_key_env: ANTHROPIC_API_KEY   # default per provider; keeps the key out of this file
+#   # api_key_file: /etc/tripwire/llm.key
+#   # base_url: http://localhost:11434/v1   # self-hosted or proxied endpoint
+#   # timeout: 30s
+#   # max_tokens: 8192
+#   # effort: low                # anthropic only; omit unless your model accepts it
+#   guidance: "a CI build host"  # shapes what the decoy pretends to be
+#
+# Generated decoys are written once and are not refreshed by the daemon. Run
+# `tripwire regenerate` from a systemd timer or cron if you want them rewritten
+# periodically, the way template decoys are.
+
 # Allowlist benign readers. Every field set in a rule must match (AND); any rule
 # matching makes the read benign. A rule with no fields matches nothing.
 #

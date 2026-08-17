@@ -34,6 +34,10 @@ type Config struct {
 	Sinks SinkConfig  `yaml:"sinks"`
 	Allow []AllowRule `yaml:"allow"` // policy allowlist
 	State string      `yaml:"state_dir"`
+
+	// LLM configures decoy generation for `kind: llm` entries. Absent by
+	// default, and only consulted by the CLI — the daemon never calls out.
+	LLM *LLMConfig `yaml:"llm"`
 }
 
 // BaitEntry is one decoy. It accepts either form in YAML:
@@ -262,7 +266,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("bait[%d] (%s): unknown kind %q (valid: %s)", i, b.Path, b.Kind, bait.KindNames())
 		}
 	}
-	return nil
+	return c.validateLLM()
 }
 
 // HasDestructiveAction reports whether the ladder can kill or power off.

@@ -13,6 +13,7 @@ import (
 	"github.com/mbarnathan/tripwire/internal/alert"
 	"github.com/mbarnathan/tripwire/internal/bait"
 	"github.com/mbarnathan/tripwire/internal/config"
+	"github.com/mbarnathan/tripwire/internal/llm"
 	"github.com/mbarnathan/tripwire/internal/state"
 )
 
@@ -68,6 +69,8 @@ func (c *cli) run(args []string) error {
 		return c.disarm()
 	case "reset":
 		return c.reset()
+	case "regenerate":
+		return c.regenerate()
 	case "_place-bait": // used by the package postinstall; not documented
 		return c.placeBait()
 	case "_remove-bait": // used by the package preremove; not documented
@@ -82,7 +85,7 @@ func (c *cli) run(args []string) error {
 }
 
 func (c *cli) usage() {
-	fmt.Fprintln(os.Stderr, "usage: tripwire {status|verify|test|arm [--force]|disarm|reset}")
+	fmt.Fprintln(os.Stderr, "usage: tripwire {status|verify|test|arm [--force]|disarm|reset|regenerate}")
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  status   posture, arm state, and whether the wire has tripped")
 	fmt.Fprintln(os.Stderr, "  verify   check that every decoy is present and 0600")
@@ -90,6 +93,7 @@ func (c *cli) usage() {
 	fmt.Fprintln(os.Stderr, "  arm      enable the configured destructive actions (needs a passing test)")
 	fmt.Fprintln(os.Stderr, "  disarm   drop back to alert-only")
 	fmt.Fprintln(os.Stderr, "  reset    clear a tripped record so the host can be armed again")
+	fmt.Fprintln(os.Stderr, "  regenerate  rewrite the decoys, re-running llm generation where configured")
 }
 
 func (c *cli) loadConfig() (*config.Config, error) {
@@ -289,13 +293,64 @@ func (c *cli) placeBait() error {
 		_ = os.WriteFile(c.fingerprintPath, []byte(fp+"\n"), 0o644)
 	}
 
+	return c.place(context.Background(), fp, false)
+}
+
+// regenerate rewrites every configured decoy: template kinds get a fresh expiry,
+// and llm kinds are generated again. The daemon deliberately does not do this —
+// it never makes outbound calls — so this is the command to run from a timer if
+// you want generated decoys refreshed on a schedule.
+func (c *cli) regenerate() error {
+	return c.place(context.Background(), c.fingerprint(), true)
+}
+
+// place writes every configured decoy. strict decides what a generation failure
+// means: `tripwire regenerate` is an explicit operator action and fails loudly,
+// while _place-bait runs from the package postinstall and must not break an
+// install over an unreachable API — it falls back to the template and says so.
+func (c *cli) place(ctx context.Context, fp string, strict bool) error {
 	now := c.now()
+	gen := c.generator()
+
+	var genErrs int
 	for _, d := range c.configuredDecoys() {
-		if err := bait.PlaceSafe(d, fp, now); err != nil {
+		res, err := bait.PlaceGenerated(ctx, d, fp, now, gen)
+		if err != nil {
 			return fmt.Errorf("place %s: %w", d.Path, err)
 		}
-		fmt.Fprintf(c.out, "placed %s\n", d.Path)
+		switch {
+		case res.GenErr != nil:
+			genErrs++
+			fmt.Fprintf(c.out, "placed %s (from template: %v)\n", d.Path, res.GenErr)
+		case res.Generated:
+			fmt.Fprintf(c.out, "placed %s (generated)\n", d.Path)
+		default:
+			fmt.Fprintf(c.out, "placed %s\n", d.Path)
+		}
 	}
+	if strict && genErrs > 0 {
+		return fmt.Errorf("%d decoy(s) fell back to the built-in template", genErrs)
+	}
+	return nil
+}
+
+// generator builds the LLM client when the config asks for one. A failure here
+// is reported per decoy by PlaceGenerated rather than aborting: a decoy from a
+// template still trips the wire, and a missing decoy does not.
+func (c *cli) generator() bait.Generator {
+	cfg, err := c.loadConfig()
+	if err != nil || !cfg.UsesLLM() {
+		return nil
+	}
+	opts, err := cfg.LLMOptions()
+	if err == nil {
+		var client *llm.Client
+		if client, err = llm.New(opts); err == nil {
+			fmt.Fprintf(c.out, "generating decoys with %s\n", client.Describe())
+			return client
+		}
+	}
+	fmt.Fprintf(c.out, "note: llm generation unavailable (%v)\n", err)
 	return nil
 }
 

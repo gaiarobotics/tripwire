@@ -21,6 +21,10 @@ type Kind int
 const (
 	KindClaude Kind = iota
 	KindCodex
+	// KindLLM defers the file's contents to a configured language model instead
+	// of a built-in template. It is never inferred — an operator has to ask for
+	// it by name — and it falls back to a template if generation fails.
+	KindLLM
 )
 
 // Decoy is one planted credential file.
@@ -56,13 +60,14 @@ const (
 	KindNameAuto   = "auto"
 	KindNameClaude = "claude"
 	KindNameCodex  = "codex"
+	KindNameLLM    = "llm"
 )
 
 // ValidKindName reports whether name is a schema selector we understand. The
 // empty string means unset, which is treated as "auto".
 func ValidKindName(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "", KindNameAuto, KindNameClaude, KindNameCodex:
+	case "", KindNameAuto, KindNameClaude, KindNameCodex, KindNameLLM:
 		return true
 	}
 	return false
@@ -70,7 +75,7 @@ func ValidKindName(name string) bool {
 
 // KindNames lists the accepted selectors, for error messages.
 func KindNames() string {
-	return KindNameAuto + ", " + KindNameClaude + ", " + KindNameCodex
+	return KindNameAuto + ", " + KindNameClaude + ", " + KindNameCodex + ", " + KindNameLLM
 }
 
 // KindByName resolves a configured schema selector for a path. An unset or
@@ -84,6 +89,8 @@ func KindByName(name, path string) (Kind, error) {
 		return KindClaude, nil
 	case KindNameCodex:
 		return KindCodex, nil
+	case KindNameLLM:
+		return KindLLM, nil
 	}
 	return 0, fmt.Errorf("unknown decoy kind %q (valid: %s)", name, KindNames())
 }
@@ -154,20 +161,24 @@ func PlaceSafe(d Decoy, fingerprint string, now time.Time) error {
 // install fingerprint embedded and a future expiry (no stale-token tell).
 // Mode is 0600 root:root (ownership applied by the caller/postinst as root).
 func Place(d Decoy, fingerprint string, now time.Time) error {
-	if err := os.MkdirAll(filepath.Dir(d.Path), 0o755); err != nil {
-		return fmt.Errorf("mkdir: %w", err)
-	}
 	body, err := render(d.Kind, fingerprint, now)
 	if err != nil {
 		return err
 	}
-	// Write atomically: temp file + rename, so a reader never sees a partial file
-	// and never triggers the wire on a half-written decoy.
-	tmp := d.Path + ".tmp"
+	return writeDecoy(d.Path, body)
+}
+
+// writeDecoy writes decoy content atomically: temp file + rename, so a reader
+// never sees a partial file and never trips the wire on a half-written decoy.
+func writeDecoy(path string, body []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, body, 0o600); err != nil {
 		return fmt.Errorf("write: %w", err)
 	}
-	if err := os.Rename(tmp, d.Path); err != nil {
+	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename: %w", err)
 	}

@@ -175,6 +175,13 @@ func refreshLoop(ctx context.Context, cfg *config.Config, m watch.Marker, finger
 			return
 		case <-t.C:
 			for _, d := range decoys {
+				if d.Kind == bait.KindLLM {
+					// Generated decoys are the CLI's to rewrite. The daemon runs
+					// as root with CAP_SYS_ADMIN and makes no outbound calls, and
+					// overwriting generated content with a template would undo
+					// exactly what the operator asked for.
+					continue
+				}
 				_ = m.Unmark(d.Path)
 				if err := bait.PlaceSafe(d, fingerprint, time.Now()); err != nil {
 					log.Printf("tripwired: refresh %s: %v", d.Path, err)

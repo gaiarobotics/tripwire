@@ -23,7 +23,8 @@
       "Bash(sg docker -c 'docker run --rm -v \"$PWD\":/src:ro -w /tmp debian:12 sh -c \" *)",
       "Bash(sg docker *)",
       "Bash(git add *)",
-      "Bash(git commit -q -m 'docs: add MIT LICENSE *)"
+      "Bash(git commit -q -m 'docs: add MIT LICENSE *)",
+      "Skill(claude-api)"
     ]
   }
 }
