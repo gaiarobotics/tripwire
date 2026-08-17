@@ -45,6 +45,10 @@ COMMON_ASSERTS='
         exit 1
     fi
 
+    # Each format carries the license text where its own convention expects it.
+    test -s "$LICENSEPATH" || { echo "FAIL: license text missing at $LICENSEPATH"; exit 1; }
+    grep -q "MIT License" "$LICENSEPATH" || { echo "FAIL: $LICENSEPATH is not the MIT text"; exit 1; }
+
     grep -q "/etc/codex" /etc/updatedb.conf 2>/dev/null || echo "note: updatedb.conf absent, no pruning needed"
 
     tripwire status > /tmp/status.txt || { echo "FAIL: tripwire status errored"; cat /tmp/status.txt; exit 1; }
@@ -61,11 +65,12 @@ REMOVE_ASSERTS='
 '
 
 run() {
-    img="$1"; pkg="$2"; install="$3"; remove="$4"; ownercheck="$5"
+    img="$1"; pkg="$2"; install="$3"; remove="$4"; ownercheck="$5"; licensepath="$6"
     echo "=== $img ==="
     "$DOCKER" run --rm -v "$PWD":/src:ro -w /tmp "$img" sh -c "
         set -e
         export OWNERCHECK='$ownercheck'
+        export LICENSEPATH='$licensepath'
         $install /src/$pkg
         $COMMON_ASSERTS
         $remove
@@ -77,21 +82,21 @@ run() {
 run debian:12 "$DEB" \
     "apt-get update -qq >/dev/null && apt-get install -y -qq" \
     "apt-get remove -y -qq tripwire >/dev/null" \
-    "dpkg -S"
+    "dpkg -S" /usr/share/doc/tripwire/copyright
 
 run ubuntu:24.04 "$DEB" \
     "apt-get update -qq >/dev/null && apt-get install -y -qq" \
     "apt-get remove -y -qq tripwire >/dev/null" \
-    "dpkg -S"
+    "dpkg -S" /usr/share/doc/tripwire/copyright
 
 run rockylinux:9 "$RPM" \
     "dnf install -y -q" \
     "dnf remove -y -q tripwire >/dev/null" \
-    "rpm -qf"
+    "rpm -qf" /usr/share/licenses/tripwire/LICENSE
 
 run fedora:41 "$RPM" \
     "dnf install -y -q" \
     "dnf remove -y -q tripwire >/dev/null" \
-    "rpm -qf"
+    "rpm -qf" /usr/share/licenses/tripwire/LICENSE
 
 echo "smoke: all distros passed"
