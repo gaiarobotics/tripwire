@@ -5,9 +5,9 @@ The canary that brings down the coalmine.
 Traditional canary tokens are helpful for alerting you to a compromise,
 particularly one that is trying to exfiltrate your credentials. Tripwire not only notifies you, but actually stops the attack by shutting down your system.
 
-You see, it is rather hard to keep hacking a system that is off. Some downtime is generally worth stopping an intrusion.
+You see, it is rather hard to keep hacking a system that is off, regardless of how good the attacker is. Some downtime is generally worth stopping an intrusion.
 
-Tripwire uses fanotify to identify the triggering user and process, and avoids triggering on benign process reads such as updatedb. As such, it is currently Linux-only.
+Tripwire does not rely on an attempt to use the credential, as traditional canaries often do - merely reading it is enough. Tripwire uses fanotify to identify the triggering user and process, and avoids triggering on benign process reads such as updatedb. As such, it is currently Linux-only.
 
 ## More specifically:
 
