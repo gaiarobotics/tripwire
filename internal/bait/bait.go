@@ -5,7 +5,6 @@
 package bait
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -21,11 +20,35 @@ type Kind int
 const (
 	KindClaude Kind = iota
 	KindCodex
+	KindAWS
+	KindGCP
+	KindNPM
+	KindPyPI
+	KindGitHub
 	// KindLLM defers the file's contents to a configured language model instead
 	// of a built-in template. It is never inferred — an operator has to ask for
 	// it by name — and it falls back to a template if generation fails.
 	KindLLM
 )
+
+// Format is the on-disk syntax a schema renders. Not every credential file is
+// JSON: an npmrc that parsed as JSON would announce itself as fake.
+type Format int
+
+const (
+	FormatJSON Format = iota
+	FormatText
+)
+
+// Format reports the syntax the kind writes. KindLLM has no syntax of its own —
+// it borrows the fallback schema's, so the model is asked for the right one.
+func (k Kind) Format() Format {
+	switch k {
+	case KindAWS, KindNPM, KindPyPI, KindGitHub:
+		return FormatText
+	}
+	return FormatJSON
+}
 
 // Decoy is one planted credential file.
 type Decoy struct {
@@ -45,12 +68,24 @@ func DefaultPaths() []string {
 }
 
 // DefaultDecoys pairs each default path with the schema it should mimic.
+//
+// Every path here is one a real tool would *not* read. /etc/npm/npmrc and
+// /etc/pip/pip.conf are deliberately not npm's and pip's own system config
+// locations (those are $PREFIX/etc/npmrc and /etc/pip.conf): a decoy that the
+// real client loads would hand a non-functional token to every build on the
+// host. The same rule picks /etc/aws over the SDK's ~/.aws and /etc/gh over
+// gh's ~/.config/gh — plausible to a human reading /etc, inert to the tooling.
 func DefaultDecoys() []Decoy {
 	return []Decoy{
 		{"/etc/claude-code/credentials.json", KindClaude},
 		{"/etc/anthropic/claude.credentials.json", KindClaude},
 		{"/etc/codex/auth.json", KindCodex},
 		{"/etc/openai/codex-auth.json", KindCodex},
+		{"/etc/aws/credentials", KindAWS},
+		{"/etc/gcloud/service-account.json", KindGCP},
+		{"/etc/npm/npmrc", KindNPM},
+		{"/etc/pip/pip.conf", KindPyPI},
+		{"/etc/gh/hosts.yml", KindGitHub},
 	}
 }
 
@@ -60,44 +95,93 @@ const (
 	KindNameAuto   = "auto"
 	KindNameClaude = "claude"
 	KindNameCodex  = "codex"
+	KindNameAWS    = "aws"
+	KindNameGCP    = "gcp"
+	KindNameNPM    = "npm"
+	KindNamePyPI   = "pip"
+	KindNameGitHub = "github"
 	KindNameLLM    = "llm"
 )
+
+// kindsByName resolves an explicit selector. "auto" is absent on purpose: it
+// means "infer", which needs the path.
+var kindsByName = map[string]Kind{
+	KindNameClaude: KindClaude,
+	KindNameCodex:  KindCodex,
+	KindNameAWS:    KindAWS,
+	KindNameGCP:    KindGCP,
+	KindNameNPM:    KindNPM,
+	KindNamePyPI:   KindPyPI,
+	KindNameGitHub: KindGitHub,
+	KindNameLLM:    KindLLM,
+}
+
+// kindNameOrder fixes the order selectors are listed in for operators; a map
+// alone would shuffle the error message on every run.
+var kindNameOrder = []string{
+	KindNameAuto, KindNameClaude, KindNameCodex, KindNameAWS, KindNameGCP,
+	KindNameNPM, KindNamePyPI, KindNameGitHub, KindNameLLM,
+}
 
 // ValidKindName reports whether name is a schema selector we understand. The
 // empty string means unset, which is treated as "auto".
 func ValidKindName(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "", KindNameAuto, KindNameClaude, KindNameCodex, KindNameLLM:
+	norm := strings.ToLower(strings.TrimSpace(name))
+	if norm == "" || norm == KindNameAuto {
 		return true
 	}
-	return false
+	_, ok := kindsByName[norm]
+	return ok
 }
 
 // KindNames lists the accepted selectors, for error messages.
 func KindNames() string {
-	return KindNameAuto + ", " + KindNameClaude + ", " + KindNameCodex + ", " + KindNameLLM
+	return strings.Join(kindNameOrder, ", ")
 }
 
 // KindByName resolves a configured schema selector for a path. An unset or
 // "auto" selector infers from the filename; anything else names a schema
 // explicitly and overrides inference.
 func KindByName(name, path string) (Kind, error) {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "", KindNameAuto:
+	norm := strings.ToLower(strings.TrimSpace(name))
+	if norm == "" || norm == KindNameAuto {
 		return KindFor(path), nil
-	case KindNameClaude:
-		return KindClaude, nil
-	case KindNameCodex:
-		return KindCodex, nil
-	case KindNameLLM:
-		return KindLLM, nil
+	}
+	if k, ok := kindsByName[norm]; ok {
+		return k, nil
 	}
 	return 0, fmt.Errorf("unknown decoy kind %q (valid: %s)", name, KindNames())
 }
 
+// kindHints infers a schema from what a path is named, most specific match
+// first. It is a list rather than a map so the order is fixed: a path that
+// mentions two services resolves the same way on every host.
+var kindHints = []struct {
+	substr string
+	kind   Kind
+}{
+	{"codex", KindCodex},
+	{"openai", KindCodex},
+	{"claude", KindClaude},
+	{"anthropic", KindClaude},
+	{"github", KindGitHub},
+	{"/gh/", KindGitHub},
+	{"aws", KindAWS},
+	{"gcloud", KindGCP},
+	{"gcp", KindGCP},
+	{"google", KindGCP},
+	{"service-account", KindGCP},
+	{"npmrc", KindNPM},
+	{"npm", KindNPM},
+	{"pypi", KindPyPI},
+	{"pip.conf", KindPyPI},
+	{"/pip/", KindPyPI},
+}
+
 // KindFor guesses which credential schema a path should mimic. Operator-added
-// paths are not in DefaultDecoys, so fall back to naming: anything mentioning
-// codex or openai gets the Codex schema, everything else the Claude one.
+// paths are not in DefaultDecoys, so fall back to naming (see kindHints).
+// Anything that names no service at all gets the Claude schema, which is what
+// this tool was built to bait.
 func KindFor(path string) Kind {
 	for _, d := range DefaultDecoys() {
 		if d.Path == path {
@@ -105,8 +189,10 @@ func KindFor(path string) Kind {
 		}
 	}
 	lower := strings.ToLower(path)
-	if strings.Contains(lower, "codex") || strings.Contains(lower, "openai") {
-		return KindCodex
+	for _, h := range kindHints {
+		if strings.Contains(lower, h.substr) {
+			return h.kind
+		}
 	}
 	return KindClaude
 }
@@ -183,35 +269,6 @@ func writeDecoy(path string, body []byte) error {
 		return fmt.Errorf("rename: %w", err)
 	}
 	return nil
-}
-
-func render(kind Kind, fp string, now time.Time) ([]byte, error) {
-	expiry := now.Add(365 * 24 * time.Hour)
-	var doc any
-	switch kind {
-	case KindClaude:
-		doc = map[string]any{
-			"claudeAiOauth": map[string]any{
-				"accessToken":  "sk-ant-oat01-" + fp + "-0000000000000000000000",
-				"refreshToken": "sk-ant-ort01-" + fp + "-0000000000000000000000",
-				"expiresAt":    expiry.UnixMilli(),
-				"scopes":       []string{"user:inference", "user:profile"},
-			},
-		}
-	case KindCodex:
-		doc = map[string]any{
-			"OPENAI_API_KEY": "sk-proj-" + fp + "-0000000000000000000000",
-			"tokens": map[string]any{
-				"access_token":  fp + ".0000000000000000",
-				"refresh_token": fp + ".1111111111111111",
-				"account_id":    fp,
-			},
-			"last_refresh": now.UTC().Format(time.RFC3339),
-		}
-	default:
-		return nil, fmt.Errorf("unknown decoy kind %d", kind)
-	}
-	return json.MarshalIndent(doc, "", "  ")
 }
 
 // Verify confirms the decoy still exists and is a regular 0600 file. It does not

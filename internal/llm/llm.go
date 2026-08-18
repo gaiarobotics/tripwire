@@ -129,12 +129,19 @@ func (c *Client) endpoint(def string) string {
 // properties the caller enforces anyway — JSON only, fingerprint present — so
 // the common case does not need a retry.
 func (c *Client) prompt(req bait.GenRequest) (system, user string) {
+	// A credential file is only convincing in its own syntax, so the format rule
+	// follows the schema this path would otherwise get: JSON for the API-token
+	// files, the service's own INI or YAML for the rest.
+	shape := "- Respond with a single JSON object and nothing else: no prose, no explanation, no Markdown code fence."
+	if req.Format == bait.FormatText {
+		shape = "- Respond with the file's contents and nothing else: no prose, no explanation, no Markdown code fence. Use the exact on-disk syntax the real file uses (INI, YAML, key=value — whatever the tool itself writes), not JSON."
+	}
 	system = strings.Join([]string{
 		"You write decoy credential files for a defensive security canary.",
 		"The file is planted on a server so that any process reading it can be detected; it is never used to authenticate anything.",
 		"",
 		"Rules, all mandatory:",
-		"- Respond with a single JSON object and nothing else: no prose, no explanation, no Markdown code fence.",
+		shape,
 		"- Every credential-like value (tokens, keys, secrets, ids) MUST contain the tracking string given below, verbatim. That string is how a leaked decoy is traced back to the host it came from.",
 		"- Values must be structurally plausible for the service but non-functional. Never reproduce a real credential, and never emit a key you have seen before.",
 		"- Any expiry or timestamp field must be in the future relative to the reference time given below, so the file does not look abandoned.",
@@ -151,7 +158,11 @@ func (c *Client) prompt(req bait.GenRequest) (system, user string) {
 	if g := strings.TrimSpace(c.opts.Guidance); g != "" {
 		fmt.Fprintf(&b, "Additional context about this host: %s\n", g)
 	}
-	b.WriteString("\nWrite the JSON object now.")
+	if req.Format == bait.FormatText {
+		b.WriteString("\nWrite the file contents now.")
+	} else {
+		b.WriteString("\nWrite the JSON object now.")
+	}
 	return system, b.String()
 }
 
@@ -164,11 +175,24 @@ func serviceHint(path string, fallback bait.Kind) string {
 		return "OpenAI / Codex CLI credentials"
 	case strings.Contains(lower, "claude"), strings.Contains(lower, "anthropic"):
 		return "Anthropic / Claude Code credentials"
-	case fallback == bait.KindCodex:
-		return "an OpenAI-style API credential file"
-	default:
-		return "an AI coding assistant credential file"
 	}
+	// No name to go on, so fall back to whichever schema the template would have
+	// written — that is already the best guess anyone here has about the path.
+	switch fallback {
+	case bait.KindCodex:
+		return "an OpenAI-style API credential file"
+	case bait.KindAWS:
+		return "an AWS shared credentials file (INI: aws_access_key_id, aws_secret_access_key)"
+	case bait.KindGCP:
+		return "a Google Cloud service account key (JSON)"
+	case bait.KindNPM:
+		return "an npm config file (npmrc, with a registry auth token)"
+	case bait.KindPyPI:
+		return "a pip config file (pip.conf, with an index url carrying a PyPI token)"
+	case bait.KindGitHub:
+		return "a GitHub CLI hosts file (YAML, with an OAuth token)"
+	}
+	return "an AI coding assistant credential file"
 }
 
 var _ bait.Generator = (*Client)(nil)

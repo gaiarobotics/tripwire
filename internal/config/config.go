@@ -51,7 +51,8 @@ type Config struct {
 // they should mimic.
 type BaitEntry struct {
 	Path string `yaml:"path"`
-	Kind string `yaml:"kind"` // auto (default) | claude | codex
+	// auto (default) | claude | codex | aws | gcp | npm | pip | github | llm
+	Kind string `yaml:"kind"`
 }
 
 // UnmarshalYAML accepts a scalar path or a mapping, so a plain list of strings

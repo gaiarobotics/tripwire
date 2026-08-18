@@ -1,6 +1,7 @@
 package bait
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,10 +10,10 @@ import (
 	"time"
 )
 
-func TestDefaultDecoysCoverBothTools(t *testing.T) {
+func TestDefaultDecoysCoverEveryBaitedService(t *testing.T) {
 	paths := DefaultPaths()
 	joined := strings.Join(paths, " ")
-	for _, want := range []string{"claude", "anthropic", "codex", "openai"} {
+	for _, want := range []string{"claude", "anthropic", "codex", "openai", "aws", "gcloud", "npm", "pip", "gh"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("default paths missing %q: %v", want, paths)
 		}
@@ -20,6 +21,25 @@ func TestDefaultDecoysCoverBothTools(t *testing.T) {
 	for _, p := range paths {
 		if !filepath.IsAbs(p) || !strings.HasPrefix(p, "/etc/") {
 			t.Fatalf("decoy %q must be an absolute /etc path", p)
+		}
+	}
+	// A decoy the real client loads is worse than no decoy: every build on the
+	// host would authenticate with a dead token. These are the paths npm, pip,
+	// and the AWS SDK actually read.
+	for _, forbidden := range []string{"/etc/npmrc", "/etc/pip.conf", "/etc/xdg/pip/pip.conf", "/etc/aws/config"} {
+		for _, p := range paths {
+			if p == forbidden {
+				t.Errorf("%s is read by the real tool; a decoy there breaks the host", p)
+			}
+		}
+	}
+	// Inference has to agree with the shipped pairings even without the
+	// exact-path shortcut, so an operator who moves a decoy elsewhere still gets
+	// the schema its name implies.
+	for _, d := range DefaultDecoys() {
+		moved := strings.Replace(d.Path, "/etc/", "/srv/secrets/", 1)
+		if got := KindFor(moved); got != d.Kind {
+			t.Errorf("KindFor(%q) = %v, but the default pairs that name with %v", moved, got, d.Kind)
 		}
 	}
 }
@@ -90,6 +110,132 @@ func TestPlacedTokenExpiryIsInTheFuture(t *testing.T) {
 	}
 }
 
+// Every schema has to satisfy the two properties the rest of Tripwire relies
+// on: the file carries a greppable fingerprint (so a leak names this host, and
+// so IsOurs will let a refresh rewrite it), and it is written in the syntax the
+// real tool uses (so it does not read as fake).
+func TestEverySchemaIsRecognisableAndWellFormed(t *testing.T) {
+	const fp = "tw-deadbeefdeadbeef"
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	cases := []struct {
+		kind  Kind
+		name  string
+		json  bool
+		marks []string // strings a reader of the real format would expect
+	}{
+		{KindClaude, "claude", true, []string{"claudeAiOauth", "sk-ant-oat01-"}},
+		{KindCodex, "codex", true, []string{"OPENAI_API_KEY", "sk-proj-"}},
+		{KindAWS, "aws", false, []string{"[default]", "aws_access_key_id = AKIA", "aws_secret_access_key = "}},
+		{KindGCP, "gcp", true, []string{"service_account", "BEGIN PRIVATE KEY", "iam.gserviceaccount.com"}},
+		{KindNPM, "npm", false, []string{"registry=https://registry.npmjs.org/", ":_authToken=npm_"}},
+		{KindPyPI, "pip", false, []string{"[global]", "index-url = ", "pypi-"}},
+		{KindGitHub, "github", false, []string{"github.com:", "oauth_token: gho_"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			target := filepath.Join(t.TempDir(), "decoy")
+			if err := Place(Decoy{Path: target, Kind: tc.kind}, fp, now); err != nil {
+				t.Fatalf("Place: %v", err)
+			}
+			raw, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(raw)
+			if !strings.Contains(body, fp) {
+				t.Fatalf("fingerprint not embedded:\n%s", body)
+			}
+			if ours, err := IsOurs(target); err != nil || !ours {
+				t.Fatalf("IsOurs = %t, %v — a refresh could not rewrite this decoy", ours, err)
+			}
+			for _, want := range tc.marks {
+				if !strings.Contains(body, want) {
+					t.Errorf("missing %q:\n%s", want, body)
+				}
+			}
+
+			gotJSON := json.Unmarshal(raw, new(map[string]any)) == nil
+			if gotJSON != tc.json {
+				t.Errorf("json = %t, want %t:\n%s", gotJSON, tc.json, body)
+			}
+			wantFormat := FormatJSON
+			if !tc.json {
+				wantFormat = FormatText
+				if !strings.HasSuffix(body, "\n") {
+					t.Errorf("a line-oriented credential file should end in a newline:\n%q", body)
+				}
+			}
+			if tc.kind.Format() != wantFormat {
+				t.Errorf("Format() = %v, want %v", tc.kind.Format(), wantFormat)
+			}
+		})
+	}
+}
+
+// Token filler is derived from the fingerprint, not drawn at random: rendering
+// twice has to produce identical bytes, or every 12-hour refresh would read as
+// a credential that quietly rotates itself.
+func TestRenderingIsDeterministicPerHost(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	for _, d := range DefaultDecoys() {
+		first, err := render(d.Kind, "tw-deadbeefdeadbeef", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		again, err := render(d.Kind, "tw-deadbeefdeadbeef", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(first, again) {
+			t.Errorf("%s: re-rendering changed the file", d.Path)
+		}
+		// ...and two hosts must not share tokens, or one leaked decoy would
+		// implicate every install.
+		other, err := render(d.Kind, "tw-0123456789abcdef", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Equal(first, other) {
+			t.Errorf("%s: two fingerprints produced the same decoy", d.Path)
+		}
+	}
+}
+
+// Sizes are the cheapest tell there is: a 30-character AWS secret is not one.
+func TestTokenWidthsMatchTheRealFormats(t *testing.T) {
+	const fp = "tw-deadbeefdeadbeef"
+	widths := map[string]struct {
+		body   []byte
+		prefix string
+		want   int // total token length, prefix included
+	}{
+		"aws access key id":  {renderAWS(fp, time.Now()), "AKIA", 20},
+		"npm auth token":     {renderNPM(fp), "npm_", 40},
+		"github oauth token": {renderGitHub(fp), "gho_", 40},
+	}
+	for name, tc := range widths {
+		body := string(tc.body)
+		i := strings.Index(body, tc.prefix)
+		if i < 0 {
+			t.Fatalf("%s: prefix %q not found in\n%s", name, tc.prefix, body)
+		}
+		token := body[i:]
+		if j := strings.IndexAny(token, "\n \t"); j >= 0 {
+			token = token[:j]
+		}
+		if len(token) != tc.want {
+			t.Errorf("%s: %q is %d chars, want %d", name, token, len(token), tc.want)
+		}
+	}
+	// An AWS secret is 40 characters on its own line.
+	for _, line := range strings.Split(string(renderAWS(fp, time.Now())), "\n") {
+		if secret, ok := strings.CutPrefix(line, "aws_secret_access_key = "); ok && len(secret) != 40 {
+			t.Errorf("aws secret is %d chars, want 40", len(secret))
+		}
+	}
+}
+
 func TestVerifyDetectsMissingAndModified(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "codex", "auth.json")
@@ -121,6 +267,17 @@ func TestKindForKnownAndInferredPaths(t *testing.T) {
 		"/srv/secrets/CODEX-creds.json":           KindCodex,  // case-insensitive
 		"/srv/secrets/anthropic-credentials.json": KindClaude, // default schema
 		"/srv/secrets/api.json":                   KindClaude,
+		"/etc/aws/credentials":                    KindAWS, // known default
+		"/etc/gcloud/service-account.json":        KindGCP,
+		"/etc/npm/npmrc":                          KindNPM,
+		"/etc/pip/pip.conf":                       KindPyPI,
+		"/etc/gh/hosts.yml":                       KindGitHub,
+		"/srv/deploy/aws-prod.credentials":        KindAWS, // inferred by name
+		"/srv/deploy/GCP-key.json":                KindGCP,
+		"/srv/deploy/google-service-account.json": KindGCP,
+		"/srv/deploy/.npmrc":                      KindNPM,
+		"/srv/deploy/.pypirc":                     KindPyPI,
+		"/srv/deploy/github-token.yml":            KindGitHub,
 	}
 	for path, want := range cases {
 		if got := KindFor(path); got != want {
@@ -238,6 +395,11 @@ func TestKindByNameResolvesSelectors(t *testing.T) {
 		{"codex", "/etc/anthropic/creds.json", KindCodex}, // explicit beats name
 		{"CODEX", "/srv/x.json", KindCodex},               // case-insensitive
 		{"  codex  ", "/srv/x.json", KindCodex},           // tolerant of spacing
+		{"aws", "/srv/x.json", KindAWS},
+		{"gcp", "/srv/x.json", KindGCP},
+		{"npm", "/srv/x.json", KindNPM},
+		{"pip", "/srv/x.json", KindPyPI},
+		{"github", "/srv/x.json", KindGitHub},
 	}
 	for _, tc := range cases {
 		got, err := KindByName(tc.name, tc.path)
@@ -257,14 +419,21 @@ func TestKindByNameRejectsUnknownSelector(t *testing.T) {
 }
 
 func TestValidKindName(t *testing.T) {
-	for _, ok := range []string{"", "auto", "claude", "codex", "CODEX"} {
+	for _, ok := range []string{"", "auto", "claude", "codex", "CODEX", "aws", "gcp", "npm", "pip", "github", "llm"} {
 		if !ValidKindName(ok) {
 			t.Errorf("ValidKindName(%q) = false", ok)
 		}
 	}
-	for _, bad := range []string{"gemini", "openai", "kind"} {
+	for _, bad := range []string{"gemini", "openai", "kind", "pypi", "gh"} {
 		if ValidKindName(bad) {
 			t.Errorf("ValidKindName(%q) = true", bad)
+		}
+	}
+	// The error message an operator gets has to name every selector they could
+	// have meant, and name them in the same order every time.
+	for _, want := range []string{"auto", "claude", "codex", "aws", "gcp", "npm", "pip", "github", "llm"} {
+		if !strings.Contains(KindNames(), want) {
+			t.Errorf("KindNames() = %q, missing %q", KindNames(), want)
 		}
 	}
 }

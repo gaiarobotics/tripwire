@@ -20,14 +20,24 @@ alert_timeout: 10s
 # file it did not write, so a typo here costs an error, not the file.
 #
 # A bare path infers its credential schema from the name (codex/openai -> the
-# Codex shape, anything else -> the Claude shape). Where the name does not give
-# it away, say so explicitly:
-#   - { path: /srv/app/config/creds.json, kind: codex }   # auto | claude | codex
+# Codex shape, aws -> an AWS credentials file, and so on; anything unrecognised
+# -> the Claude shape). Where the name does not give it away, say so explicitly:
+#   - { path: /srv/app/config/creds.json, kind: codex }
+#     auto | claude | codex | aws | gcp | npm | pip | github | llm
+#
+# The npm, pip, AWS and gh paths below are deliberately NOT the ones those tools
+# read (npm reads $PREFIX/etc/npmrc, pip reads /etc/pip.conf): a decoy the real
+# client loads would hand a dead token to every build on the host.
 bait:
   - /etc/claude-code/credentials.json
   - /etc/anthropic/claude.credentials.json
   - /etc/codex/auth.json
   - /etc/openai/codex-auth.json
+  - /etc/aws/credentials
+  - /etc/gcloud/service-account.json
+  - /etc/npm/npmrc
+  - /etc/pip/pip.conf
+  - /etc/gh/hosts.yml
 
 kill:
   scope: tree # pid | tree | session | loginuid

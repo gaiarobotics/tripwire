@@ -32,7 +32,9 @@ COMMON_ASSERTS='
     test -s /etc/tripwire/fingerprint || { echo "FAIL: fingerprint missing"; exit 1; }
 
     for f in /etc/claude-code/credentials.json /etc/anthropic/claude.credentials.json \
-             /etc/codex/auth.json /etc/openai/codex-auth.json; do
+             /etc/codex/auth.json /etc/openai/codex-auth.json /etc/aws/credentials \
+             /etc/gcloud/service-account.json /etc/npm/npmrc /etc/pip/pip.conf \
+             /etc/gh/hosts.yml; do
         test -f "$f" || { echo "FAIL: decoy $f missing"; exit 1; }
         mode=$(stat -c %a "$f")
         test "$mode" = "600" || { echo "FAIL: decoy $f mode $mode, want 600"; exit 1; }
@@ -57,8 +59,14 @@ COMMON_ASSERTS='
 '
 
 REMOVE_ASSERTS='
-    for f in /etc/codex/auth.json /etc/openai/codex-auth.json; do
+    for f in /etc/codex/auth.json /etc/openai/codex-auth.json /etc/aws/credentials \
+             /etc/npm/npmrc /etc/pip/pip.conf /etc/gh/hosts.yml; do
         test ! -f "$f" || { echo "FAIL: $f survived removal"; exit 1; }
+    done
+    # A decoy npmrc or pip.conf left behind would point real builds at a dead
+    # token, so the directories go too when nothing else claimed them.
+    for d in /etc/npm /etc/pip /etc/gh /etc/aws /etc/gcloud; do
+        test ! -d "$d" || { echo "FAIL: $d survived removal"; exit 1; }
     done
     grep -q "/etc/codex" /etc/updatedb.conf 2>/dev/null && { echo "FAIL: updatedb exclusion survived removal"; exit 1; }
     true

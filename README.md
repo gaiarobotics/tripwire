@@ -2,8 +2,9 @@
 
 A Linux host-intrusion canary for AI coding-agent credentials.
 
-Tripwire plants decoy Claude Code and Codex credential files under `/etc` —
-never in the real credential locations — and watches them with fanotify
+Tripwire plants decoy credential files under `/etc` — Claude Code, Codex, AWS,
+GCP, npm, pip, and GitHub, and never in the real credential locations that the
+tools themselves load — and watches them with fanotify
 permission events. When a process that is not on the allowlist opens one,
 Tripwire **holds the read** (it looks like slow I/O, not a denial), attributes
 the reader down to the login user that survives `su`/`sudo`, and runs a
@@ -69,7 +70,7 @@ rockylinux:9, and fedora:41.
 The install is **alert-only**. It never powers anything off until you
 deliberately arm it. Installing:
 
-- generates four decoy credential files (they are *generated*, not shipped, so
+- generates nine decoy credential files (they are *generated*, not shipped, so
   `rpm -qf` and `dpkg -S` report them as owned by no package — exactly what a
   hand-configured credential file looks like);
 - writes `/etc/tripwire/config.yaml` from the server profile, if absent;
@@ -170,8 +171,14 @@ bait:                     # the decoys — created here, watched here, removed h
   - /etc/anthropic/claude.credentials.json
   - /etc/codex/auth.json
   - /etc/openai/codex-auth.json
+  - /etc/aws/credentials
+  - /etc/gcloud/service-account.json
+  - /etc/npm/npmrc
+  - /etc/pip/pip.conf
+  - /etc/gh/hosts.yml
   # Long form, for paths whose name does not reveal the schema:
-  # - { path: /srv/app/config/creds.json, kind: codex }   # auto | claude | codex | llm
+  # - { path: /srv/app/config/creds.json, kind: codex }
+  #   auto | claude | codex | aws | gcp | npm | pip | github | llm
 
 llm:                      # optional; only used by `kind: llm` entries. See below.
   # provider: anthropic
@@ -286,20 +293,32 @@ toward availability.
 
 ## Decoys
 
-Four files, mode `0600 root:root`, shaped like a system-wide managed install:
+Nine files, mode `0600 root:root`, shaped like a system-wide managed install:
 
-```
-/etc/claude-code/credentials.json
-/etc/anthropic/claude.credentials.json
-/etc/codex/auth.json
-/etc/openai/codex-auth.json
-```
+| Path | Shape |
+|---|---|
+| `/etc/claude-code/credentials.json` | Claude Code OAuth credentials |
+| `/etc/anthropic/claude.credentials.json` | Claude Code OAuth credentials |
+| `/etc/codex/auth.json` | Codex CLI / OpenAI API key |
+| `/etc/openai/codex-auth.json` | Codex CLI / OpenAI API key |
+| `/etc/aws/credentials` | AWS shared credentials (INI) |
+| `/etc/gcloud/service-account.json` | GCP service account key |
+| `/etc/npm/npmrc` | npm registry auth token |
+| `/etc/pip/pip.conf` | pip index URL with a PyPI token |
+| `/etc/gh/hosts.yml` | GitHub CLI OAuth token (YAML) |
 
-Contents mirror the real credential schemas with structurally valid but
-non-functional tokens. Each carries a per-install fingerprint derived from
+Contents mirror the real credential schemas — including their real syntax, so
+the npmrc is an npmrc and not JSON — with structurally valid but non-functional
+tokens of the right widths. Each carries a per-install fingerprint derived from
 `/etc/machine-id` (`tw-` plus 16 hex chars), so a token surfacing anywhere else
-names the host it leaked from. Expiry timestamps are refreshed every 12 hours —
-a token that expired in 2023 announces itself as bait.
+names the host it leaked from. Where the format has an expiry it is refreshed
+every 12 hours — a token that expired in 2023 announces itself as bait.
+
+None of these paths is one the real client reads: npm loads `$PREFIX/etc/npmrc`,
+pip loads `/etc/pip.conf`, the AWS SDK loads `~/.aws/credentials`, and `gh` loads
+`~/.config/gh/hosts.yml`. A decoy sitting where the tool would load it would hand
+a dead token to every build on the host, so the bait lives one directory over —
+plausible to someone reading `/etc`, invisible to the tooling.
 
 Marks are per-inode, so the daemon also watches each parent directory and
 re-marks a decoy that is replaced underneath it.
@@ -322,20 +341,39 @@ bait:
   - /etc/codex/auth.json                                # kind: auto (the default)
   - { path: /srv/app/config/creds.json, kind: codex }   # explicit schema
   - { path: /srv/app/config/keys.json,  kind: claude }
+  - { path: /srv/deploy/.credentials,   kind: aws }
 ```
 
-A bare path — or `kind: auto` — infers the schema from the filename: anything
-mentioning `codex` or `openai` gets the Codex shape, everything else the Claude
-one. Name a `kind` when the path does not give it away, or when you want the
-inference overridden. Unknown kinds are rejected at startup rather than silently
-defaulted, and writing the config back out keeps bare paths bare.
+A bare path — or `kind: auto` — infers the schema from the filename: `codex` or
+`openai` gets the Codex shape, `aws` the AWS one, `gcloud`/`gcp`/`google` the
+GCP one, `npm`, `pip`/`pypi`, and `github`/`gh` theirs, and anything that names
+no service at all falls back to the Claude shape. Name a `kind` when the path
+does not give it away, or when you want the inference overridden:
+
+| `kind` | Writes |
+|---|---|
+| `claude` | Claude Code OAuth credentials (JSON) |
+| `codex` | Codex CLI / OpenAI API key (JSON) |
+| `aws` | AWS shared credentials (INI) |
+| `gcp` | GCP service account key (JSON) |
+| `npm` | npmrc with a registry auth token |
+| `pip` | pip.conf with a PyPI token in the index URL |
+| `github` | gh CLI hosts.yml (YAML) |
+| `llm` | whatever the model writes — see below |
+
+Unknown kinds are rejected at startup rather than silently defaulted, and writing
+the config back out keeps bare paths bare.
 
 ### Generated decoys (`kind: llm`)
 
 The built-in templates are fixed shapes. `kind: llm` instead asks a language
 model to write the file, so a decoy can match whatever the host plausibly runs —
 a CI service account, an internal gateway's credential file, a vendor SDK's
-config — rather than one of two hardcoded schemas.
+config — rather than one of the shipped schemas.
+
+The model is asked for the syntax the path implies, taken from the schema that
+would otherwise have been used: JSON where the template writes JSON, the
+service's own INI or YAML otherwise.
 
 It is off unless you ask for it. `auto` never selects it, and a `kind: llm` entry
 with no `llm:` section is a config error rather than a silent fallback.

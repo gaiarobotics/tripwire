@@ -21,6 +21,10 @@ type GenRequest struct {
 	Now         time.Time // reference time, for expiry values
 	Guidance    string    // optional operator hint, e.g. "a CI service account"
 	Fallback    Kind      // the built-in schema used if generation fails
+	// Format is the syntax the file should be written in, taken from the
+	// fallback schema. Not every credential file is JSON, and asking a model for
+	// a JSON npmrc would produce a decoy no npm install could ever have written.
+	Format Format
 }
 
 // Generator produces decoy content. It is implemented by internal/llm; the bait
@@ -57,9 +61,10 @@ func PlaceGenerated(ctx context.Context, d Decoy, fingerprint string, now time.T
 		Fingerprint: fingerprint,
 		Now:         now,
 		Fallback:    fallback.Kind,
+		Format:      fallback.Kind.Format(),
 	})
 	if err == nil {
-		raw, err = SanitizeGenerated(raw, fingerprint)
+		raw, err = SanitizeGenerated(raw, fingerprint, fallback.Kind.Format())
 	}
 	if err != nil {
 		return PlaceResult{GenErr: err}, PlaceSafe(fallback, fingerprint, now)
@@ -79,18 +84,28 @@ func PlaceGenerated(ctx context.Context, d Decoy, fingerprint string, now time.T
 	return PlaceResult{Generated: true}, nil
 }
 
-// SanitizeGenerated normalises and checks generated content before it is written.
+// SanitizeGenerated normalises and checks generated content before it is
+// written, in the syntax the target schema calls for.
 //
 // The fingerprint check is the load-bearing one: a decoy token that cannot be
 // traced back to the host it leaked from is not worth planting, so content that
 // omits it is rejected rather than written.
-func SanitizeGenerated(raw []byte, fingerprint string) ([]byte, error) {
+func SanitizeGenerated(raw []byte, fingerprint string, format Format) ([]byte, error) {
 	body := bytes.TrimSpace(unfence(raw))
 	if len(body) == 0 {
 		return nil, fmt.Errorf("generated content is empty")
 	}
 	if len(body) > maxGeneratedSize {
 		return nil, fmt.Errorf("generated content is %d bytes, over the %d byte limit", len(body), maxGeneratedSize)
+	}
+	if !bytes.Contains(body, []byte(fingerprint)) {
+		return nil, fmt.Errorf("generated content does not embed the install fingerprint %s", fingerprint)
+	}
+
+	if format == FormatText {
+		// Nothing to normalise but the trailing newline: an INI or YAML decoy is
+		// only checkable for the properties above.
+		return append(body, '\n'), nil
 	}
 
 	var doc map[string]any
@@ -99,9 +114,6 @@ func SanitizeGenerated(raw []byte, fingerprint string) ([]byte, error) {
 	}
 	if len(doc) == 0 {
 		return nil, fmt.Errorf("generated content is an empty JSON object")
-	}
-	if !bytes.Contains(body, []byte(fingerprint)) {
-		return nil, fmt.Errorf("generated content does not embed the install fingerprint %s", fingerprint)
 	}
 
 	// Re-marshal so the file looks like every other decoy on disk regardless of

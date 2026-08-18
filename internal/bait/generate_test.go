@@ -164,7 +164,7 @@ func TestPlaceGeneratedIgnoresGeneratorForTemplateKinds(t *testing.T) {
 
 func TestSanitizeGeneratedStripsCodeFences(t *testing.T) {
 	fenced := "```json\n{\"api_key\": \"tw-deadbeefdeadbeef-abc\"}\n```"
-	out, err := SanitizeGenerated([]byte(fenced), "tw-deadbeefdeadbeef")
+	out, err := SanitizeGenerated([]byte(fenced), "tw-deadbeefdeadbeef", FormatJSON)
 	if err != nil {
 		t.Fatalf("a fenced response should be recovered, not rejected: %v", err)
 	}
@@ -177,9 +177,48 @@ func TestSanitizeGeneratedStripsCodeFences(t *testing.T) {
 	}
 }
 
+// A generated npmrc has to stay an npmrc: the JSON rules must not be applied to
+// a schema whose real files are INI or YAML.
+func TestSanitizeGeneratedAcceptsTextSchemas(t *testing.T) {
+	npmrc := "```\nregistry=https://registry.npmjs.org/\n//registry.npmjs.org/:_authToken=npm_tw-deadbeefdeadbeef00000000000000000\n```"
+	out, err := SanitizeGenerated([]byte(npmrc), "tw-deadbeefdeadbeef", FormatText)
+	if err != nil {
+		t.Fatalf("a text schema must not be forced through the JSON checks: %v", err)
+	}
+	if strings.Contains(string(out), "```") {
+		t.Fatalf("fence survived: %s", out)
+	}
+	if !strings.HasSuffix(string(out), "\n") {
+		t.Fatalf("a line-oriented file should end in a newline: %q", out)
+	}
+	// The fingerprint requirement is the one rule that binds every format.
+	if _, err := SanitizeGenerated([]byte("registry=https://registry.npmjs.org/"), "tw-deadbeefdeadbeef", FormatText); err == nil {
+		t.Fatal("text content without the fingerprint must be rejected")
+	}
+}
+
+// The generator is told which syntax to write, taken from the schema the path
+// would otherwise get.
+func TestPlaceGeneratedPassesTheTargetFormat(t *testing.T) {
+	for path, want := range map[string]Format{
+		"npmrc":     FormatText,
+		"auth.json": FormatJSON,
+	} {
+		target := filepath.Join(t.TempDir(), path)
+		gen := &fakeGen{out: `{"api_key":"tw-deadbeefdeadbeef"}`}
+		if _, err := PlaceGenerated(context.Background(), Decoy{Path: target, Kind: KindLLM},
+			"tw-deadbeefdeadbeef", time.Now(), gen); err != nil {
+			t.Fatal(err)
+		}
+		if gen.seen.Format != want {
+			t.Errorf("%s: format = %v, want %v", path, gen.seen.Format, want)
+		}
+	}
+}
+
 func TestSanitizeGeneratedRejectsOversizeContent(t *testing.T) {
 	huge := `{"fp":"tw-deadbeefdeadbeef","pad":"` + strings.Repeat("x", 70<<10) + `"}`
-	if _, err := SanitizeGenerated([]byte(huge), "tw-deadbeefdeadbeef"); err == nil {
+	if _, err := SanitizeGenerated([]byte(huge), "tw-deadbeefdeadbeef", FormatJSON); err == nil {
 		t.Fatal("oversize content must be rejected")
 	}
 }
@@ -187,7 +226,7 @@ func TestSanitizeGeneratedRejectsOversizeContent(t *testing.T) {
 // Whatever the model returns, the file on disk should look like every other
 // decoy — same indentation, no trailing prose.
 func TestSanitizeGeneratedNormalisesFormatting(t *testing.T) {
-	out, err := SanitizeGenerated([]byte(`   {"a":{"b":"tw-deadbeefdeadbeef"}}   `), "tw-deadbeefdeadbeef")
+	out, err := SanitizeGenerated([]byte(`   {"a":{"b":"tw-deadbeefdeadbeef"}}   `), "tw-deadbeefdeadbeef", FormatJSON)
 	if err != nil {
 		t.Fatal(err)
 	}

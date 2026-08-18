@@ -39,7 +39,7 @@ Profile:     server
 Posture:     alert-only (no destructive actions configured)
 Hold:        3s
 Kill scope:  tree (max 50)
-Decoys:      4
+Decoys:      9
 Sinks:       journal
 Fingerprint: tw-...
 Last test:   never run
@@ -49,6 +49,11 @@ $ tripwire verify
   OK   /etc/anthropic/claude.credentials.json
   OK   /etc/codex/auth.json
   OK   /etc/openai/codex-auth.json
+  OK   /etc/aws/credentials
+  OK   /etc/gcloud/service-account.json
+  OK   /etc/npm/npmrc
+  OK   /etc/pip/pip.conf
+  OK   /etc/gh/hosts.yml
 ```
 
 ## 2. Prove the alert reaches you, before arming anything

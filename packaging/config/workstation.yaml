@@ -12,6 +12,11 @@ bait:
   - /etc/anthropic/claude.credentials.json
   - /etc/codex/auth.json
   - /etc/openai/codex-auth.json
+  - /etc/aws/credentials
+  - /etc/gcloud/service-account.json
+  - /etc/npm/npmrc
+  - /etc/pip/pip.conf
+  - /etc/gh/hosts.yml
 
 kill:
   scope: tree
