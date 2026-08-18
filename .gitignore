@@ -1,5 +1,6 @@
 /dist/
 /tripwire
 /tripwired
+/.claude/
 *.deb
 *.rpm
