@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // PowerOffer halts the machine. Behind an interface so tests use a recorder and
@@ -18,7 +19,8 @@ type SystemPowerOffer struct{}
 func (SystemPowerOffer) PowerOff(mode string) error {
 	if mode == "hard" {
 		// Best-effort sync, then SysRq emergency poweroff. Fastest possible cut,
-		// at the cost of unflushed writes.
+		// at the cost of unflushed writes. SysRq writes straight to the kernel
+		// and never broadcasts, so there is nothing to silence here.
 		_ = exec.Command("sync").Run()
 		if f, err := os.OpenFile("/proc/sysrq-trigger", os.O_WRONLY, 0); err == nil {
 			defer f.Close()
@@ -28,8 +30,17 @@ func (SystemPowerOffer) PowerOff(mode string) error {
 		}
 		// Fall through to graceful if sysrq is unavailable or write-protected.
 	}
-	if out, err := exec.Command("systemctl", "poweroff").CombinedOutput(); err != nil {
-		return fmt.Errorf("systemctl poweroff: %w: %s", err, out)
+	cmd := poweroffCmd()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s: %w: %s", strings.Join(cmd.Args, " "), err, out)
 	}
 	return nil
+}
+
+// poweroffCmd builds the graceful-shutdown command. --no-wall suppresses the
+// broadcast systemd would otherwise send to every logged-in session: a hostile
+// reader still holding a shell must not be told the host is going down, or they
+// get the seconds before the cut to exfiltrate or cover their tracks.
+func poweroffCmd() *exec.Cmd {
+	return exec.Command("systemctl", "poweroff", "--no-wall")
 }
